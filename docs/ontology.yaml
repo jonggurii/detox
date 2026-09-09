@@ -1,0 +1,59 @@
+# docs/ontology.yaml
+version: 1
+
+classes:
+  User:
+    description: 숏폼 콘텐츠를 소비하고 디톡스 제어를 받는 사용자
+    evidence: [로그 1, 로그 4]
+    attributes:
+      target_intent: {type: string, note: "시청 시작 시 설정한 목적", evidence: [로그 1]}
+      daily_limit_minutes: {type: int, evidence: [로그 4]}
+      current_friction_level: {type: enum, values: [nudge, friction, restrict], evidence: [로그 5]}
+    relations:
+      - starts: ViewingSession
+        evidence: [로그 1]
+      - receives: Intervention
+        evidence: [로그 4, 로그 5]
+
+  ViewingSession:
+    description: 사용자가 쇼츠/릴스를 켜서 연속 시청하는 단일 세션
+    evidence: [로그 1, 로그 2]
+    attributes:
+      session_id: {type: string, key: true}
+      started_at: {type: string, format: "HH:MM:SS"}
+      total_duration_sec: {type: int, evidence: [로그 1]}
+      viewed_count: {type: int, evidence: [로그 2]}
+      status: {type: enum, values: [active, interrupted, terminated]}
+    relations:
+      - consumes: ShortsContent
+        evidence: [로그 2, 로그 3]
+      - triggers: Intervention
+        evidence: [로그 4]
+
+  ShortsContent:
+    description: 사용자가 소비하는 개별 숏폼 영상
+    evidence: [로그 3]
+    attributes:
+      video_id: {type: string, key: true}
+      category: {type: string, examples: [학습, 유머, 자극적_가십, 챌린지], evidence: [로그 3]}
+      is_unwanted_algorithm: {type: bool, evidence: [로그 3]}
+      dopamine_score: {type: float, range: [0, 10], note: "AI 판정 자극도 점수"}
+    relations:
+      - belongs_to: ViewingSession
+        evidence: [로그 2]
+
+  Intervention:
+    description: 과시청 방지를 위해 단계별로 주입되는 개입 조치
+    evidence: [로그 4, 로그 5]
+    attributes:
+      type: {type: enum, values: [촉진_필터링, 억제_개수제한, 강조_시간경각심, 차단_화면잠금], evidence: [로그 4]}
+      trigger_condition: {type: string, examples: [노출_10개_초과, 시청_20분_도달], evidence: [로그 2, 로그 4]}
+      friction_mechanism: {type: string, examples: [블러_오버레이, 성찰_질문, 10초_대기], evidence: [로그 5]}
+    relations:
+      - targets: ViewingSession
+        evidence: [로그 2]
+      - sent_to: User
+        evidence: [로그 5]
+
+# 범위 밖(명시): 유튜브/인스타그램 자체 알고리즘 추천 엔진 수정, 사용자 결제 처리
+# 핵심 흐름: User --(시작)--> ViewingSession --(초과 감지)--> Intervention --(단계별 마찰 주입)--> User 이탈 유도
