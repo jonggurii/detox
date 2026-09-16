@@ -1,59 +1,75 @@
-# docs/ontology.yaml
-version: 1
+Receipt` 클래스와 `ItemException` 관계가 완벽히 포함된 미니 도메인 온톨로지입니다.
+
+```yaml
+# 영수증 OCR & 복합 N빵 정산 봇 미니 도메인 온톨로지 (docs/ontology.yaml)
+version: 1.1
 
 classes:
   User:
-    description: 숏폼 콘텐츠를 소비하고 디톡스 제어를 받는 사용자
-    evidence: [로그 1, 로그 4]
-    attributes:
-      target_intent: {type: string, note: "시청 시작 시 설정한 목적", evidence: [로그 1]}
-      daily_limit_minutes: {type: int, evidence: [로그 4]}
-      current_friction_level: {type: enum, values: [nudge, friction, restrict], evidence: [로그 5]}
-    relations:
-      - starts: ViewingSession
-        evidence: [로그 1]
-      - receives: Intervention
-        evidence: [로그 4, 로그 5]
-
-  ViewingSession:
-    description: 사용자가 쇼츠/릴스를 켜서 연속 시청하는 단일 세션
+    description: 모임의 총무(정산 담당자) 또는 일반 참석자
     evidence: [로그 1, 로그 2]
     attributes:
-      session_id: {type: string, key: true}
-      started_at: {type: string, format: "HH:MM:SS"}
-      total_duration_sec: {type: int, evidence: [로그 1]}
-      viewed_count: {type: int, evidence: [로그 2]}
-      status: {type: enum, values: [active, interrupted, terminated]}
+      user_id: {type: string, key: true}
+      name: {type: string}
+      bank_account: {type: string, note: "송금받을 계좌 정보", evidence: [로그 1]}
     relations:
-      - consumes: ShortsContent
-        evidence: [로그 2, 로그 3]
-      - triggers: Intervention
-        evidence: [로그 4]
+      - creates: SettlementSession
+        evidence: [로그 1]
 
-  ShortsContent:
-    description: 사용자가 소비하는 개별 숏폼 영상
+  SettlementSession:
+    description: 전체 모임 정산 세션 (1차~N차 총괄)
+    evidence: [로그 1, 로그 3]
+    attributes:
+      session_id: {type: string, key: true}
+      total_participants_count: {type: int, evidence: [로그 1]}
+      status: {type: enum, values: [calculating, requested, completed]}
+    relations:
+      - contains: SettlementRound
+        evidence: [로그 1]
+      - requires: ReminderMessage
+        evidence: [로그 4, 로그 5]
+
+  SettlementRound:
+    description: 개별 차수 (1차, 2차 등) 모임 단위
+    evidence: [로그 1, 로그 2]
+    attributes:
+      round_number: {type: int, minimum: 1, evidence: [로그 1]}
+      total_cost: {type: int, evidence: [로그 1]}
+      excluded_members: {type: array, items: {type: string}, note: "해당 차수 전체 이탈자", evidence: [로그 2]}
+    relations:
+      - belongs_to: SettlementSession
+        evidence: [로그 1]
+      - includes: Receipt
+        evidence: [로그 1]
+      - has_exception: ItemException
+        evidence: [로그 3]
+
+  Receipt:
+    description: 영수증 촬영을 통해 OCR로 파싱된 결제 정보
+    evidence: [로그 1]
+    attributes:
+      receipt_id: {type: string, key: true}
+      store_name: {type: string, evidence: [로그 1]}
+      ocr_total_amount: {type: int, evidence: [로그 1]}
+      parsed_items: {type: array, items: {type: object}, evidence: [로그 1]}
+
+  ItemException:
+    description: 특정 항목(예: 술값, 디저트 등)에 대한 미이용/제외 조건
     evidence: [로그 3]
     attributes:
-      video_id: {type: string, key: true}
-      category: {type: string, examples: [학습, 유머, 자극적_가십, 챌린지], evidence: [로그 3]}
-      is_unwanted_algorithm: {type: bool, evidence: [로그 3]}
-      dopamine_score: {type: float, range: [0, 10], note: "AI 판정 자극도 점수"}
-    relations:
-      - belongs_to: ViewingSession
-        evidence: [로그 2]
+      item_name: {type: string, evidence: [로그 3]}
+      amount: {type: int, evidence: [로그 3]}
+      excluded_members_count: {type: int, evidence: [로그 3]}
 
-  Intervention:
-    description: 과시청 방지를 위해 단계별로 주입되는 개입 조치
+  ReminderMessage:
+    description: 상대방 성향별로 생성되는 정산 독촉 카톡 메시지
     evidence: [로그 4, 로그 5]
     attributes:
-      type: {type: enum, values: [촉진_필터링, 억제_개수제한, 강조_시간경각심, 차단_화면잠금], evidence: [로그 4]}
-      trigger_condition: {type: string, examples: [노출_10개_초과, 시청_20분_도달], evidence: [로그 2, 로그 4]}
-      friction_mechanism: {type: string, examples: [블러_오버레이, 성찰_질문, 10초_대기], evidence: [로그 5]}
+      tone: {type: enum, values: [polite_formal, friendly_casual, humorous], evidence: [로그 5]}
+      generated_text: {type: string, evidence: [로그 5]}
     relations:
-      - targets: ViewingSession
-        evidence: [로그 2]
-      - sent_to: User
-        evidence: [로그 5]
+      - sent_for: SettlementSession
+        evidence: [로그 4]
 
-# 범위 밖(명시): 유튜브/인스타그램 자체 알고리즘 추천 엔진 수정, 사용자 결제 처리
-# 핵심 흐름: User --(시작)--> ViewingSession --(초과 감지)--> Intervention --(단계별 마찰 주입)--> User 이탈 유도
+# 범위 밖 (Out of Scope): 은행 이체 자동 실행 API 직접 연동, 종이 영수증 훼손 복원 OCR
+# 핵심 흐름: User --> SettlementSession --> SettlementRound (Receipt + ItemException) --> Python 계산 엔진 --> ReminderMessage
