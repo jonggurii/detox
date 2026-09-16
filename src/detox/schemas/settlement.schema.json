@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SettlementRequestContext",
+  "description": "사용자의 N빵 정산 요청 발화를 파싱한 구조화 계약",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "total_rounds": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "전체 차수 수"
+    },
+    "payer_name": {
+      "type": ["string", "null"],
+      "description": "선결제자 이름. 없으면 null"
+    },
+    "rounds_info": {
+      "type": "array",
+      "description": "차수별 비용과 제외 인원 정보",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "round": {"type": "integer", "minimum": 1},
+          "cost": {"type": "integer", "minimum": 0},
+          "excluded_members": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "required": ["round", "cost"]
+      }
+    },
+    "reminder_tone": {
+      "type": ["string", "null"],
+      "enum": ["polite_formal", "friendly_casual", "humorous", null],
+      "description": "독촉 메시지 톤"
+    }
+  },
+  "required": ["total_rounds", "rounds_info"]
+}
