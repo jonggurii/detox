@@ -1,34 +1,66 @@
-import os
-from google import genai
-from dotenv import load_dotenv
+# 🍻 영수증 OCR & 복합 N빵 정산 봇 (Smart Settlement Agent)
 
-# 1. .env 파일 로드
-load_dotenv()
+> **"영수증 찍고, '술 안 마신 2명 빼줘' 한마디면 끝!"**  
+> 영수증 OCR 문자인식과 자연어 처리 기술을 결합하여, 1원 오차 없는 정산 계산과 기분 안 상하는 맞춤형 카톡 독촉 메시지를 제공하는 AI-Native 정산 서비스입니다.
 
-api_key = os.getenv("GEMINI_API_KEY")
+---
 
-if not api_key:
-    raise ValueError("❌ .env 파일에서 GEMINI_API_KEY를 찾을 수 없습니다.")
+## 📌 1. 프로젝트 개요 (Project Overview)
 
-# 2. Gemini 클라이언트 생성
-client = genai.Client(api_key=api_key)
-chat = client.chats.create(model="gemini-3.6-flash")
+* **문제 정의:**  
+  * **기존 정산 앱의 한계:** '카카오페이 정산', 'A형총무', '총무의 계산기' 등 기존 앱들은 100% 수기 입력에 의존하며, 단순 $1/N$ 정산만 지원함.
+  * **복합 정산의 어려움:** 1차 고깃집, 2차 노래방 등 차수별 중도 이탈자 및 특정 메뉴(술, 디저트 등) 미이용자가 발생하는 **복합 차액 정산**을 처리할 수 있는 앱이 부재함.
+  * **총무의 사회적 피로도:** 일일이 엑셀로 정산하는 피로감과, 돈을 늦게 보내는 모임원에게 다시 송금을 요구할 때 느끼는 심리적 부담감 존재.
+* **핵심 차별화 기능 (USP):**
+  1. **영수증 OCR 촬영 스캔:** 영수증 사진 한 장으로 상호명, 결제 총액, 세부 메뉴 항목 자동 파싱.
+  2. **자연어 예외 조건 보완:** "1차 5명 중 2명은 술 안 마셨어", "2차는 희주 빠짐" 등 대화형 문장 입력 시 파싱 엔진이 차액 조건 자동 반영.
+  3. **Python 정밀 N빵 엔진:** LLM 계산 환각(Hallucination)을 원천 차단하여 1원 단위까지 정확한 인당 부담금 산출.
+  4. **관계 맞춤형 카톡 독촉 생성:** 정중/친근/유쾌 등 상대방과의 관계에 맞춘 톤앤매너 독촉 메시지 및 계좌 복사용 텍스트 자동 생성.
 
-print("=== N빵 정산 봇 API 테스트 시작 (종료하려면 'exit' 입력) ===")
+---
 
-# 3. 키보드로 입력받아 대화하는 무한 루프
-while True:
-    user_input = input("\n나: ")
-    
-    if user_input.strip().lower() in ["exit", "종료", "q"]:
-        print("정산 봇을 종료합니다.")
-        break
-        
-    if not user_input.strip():
-        continue
+## 🏗️ 2. 시스템 아키텍처 및 기술 스택 (System Architecture & Tech Stack)
 
-    try:
-        response = chat.send_message(user_input)
-        print(f"\n정산 봇: {response.text}")
-    except Exception as e:
-        print(f"\n❌ 호출 에러: {e}")
+본 서비스는 **[클라이언트 앱] $\rightarrow$ [Spring Boot 백엔드] $\rightarrow$ [Python AI & 계산 엔진]** 구조의 마이크로서비스(MSA)로 작동합니다.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                   Client Layer (Flutter Mobile App)                         │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │ REST API (HTTPS)
+┌──────────────────────────────────────▼──────────────────────────────────────┐
+│                  Spring Boot Backend Server (Java 21)                       │
+│  - 사용자 인증(JWT), 모임(Group) 관리, 정산 세션/이력 DB 저장 (PostgreSQL)      │
+│  - 영수증 이미지 AWS S3 업로드 및 Python AI Engine Orchestration            │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │ HTTP / gRPC (내부 통신)
+┌──────────────────────────────────────▼──────────────────────────────────────┐
+│                    Python AI & Calculation Engine (FastAPI)                 │
+│  - 영수증 OCR 텍스트 및 자연어 발화 파싱 (Gemini 3.6 Flash + Pydantic)      │
+│  - 1원 오차 없는 정밀 N빵 산술 계산 엔진 (Python Native Code)               │
+│  - 관계별(정중/친근/유쾌) 톤앤매너 정산 독촉 카톡 문구 생성기               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+
+detox/
+├── AGENTS.md                          # 에이전트 개발 규칙 및 도메인 용어집
+├── README.md                          # 프로젝트 안내서 및 로드맵
+├── docker-compose.yml                 # 전체 인프라 멀티 컨테이너 구성
+├── docs/
+│   ├── ontology.yaml                  # 미니 도메인 온톨로지 
+│   └── research/
+│       └── interviews.md              # Mom Test 인터뷰 로그 및 Job Story 
+└── src/
+    └── detox/
+        ├── parser.py                  # LLM 파서, Pydantic 스키마 및 N빵 계산 엔진 
+        ├── prompts/
+        │   └── parse_query.md         # 파싱 시스템 프롬프트 및 점검표 
+        └── schemas/
+            └── settlement.schema.json # JSON Schema 구조 계약 
+
+
+            [x] 도메인 문제 정의 및 온톨로지 설계: Mom Test 기반 실사용자 인터뷰 프로토콜 작성 및 docs/ontology.yaml 정립
+            [x] 구조화 파서 엔진 구현: Gemini 3.6 Flash 모델 기반 Pydantic 스키마(SettlementRequestContext, ItemException) 연동 완료
+            [x] 수학적 환각(Hallucination) 차단: 산술 계산 로직을 LLM 추론에서 전면 분리하여 Python 1원 단위 정밀 N빵 엔진 구축 완료
+            [x] 대화형 실행 파이프라인 검증: 터미널 CLI 기반 실시간 자연어 파싱-->정밀 계산 --> 카톡 독촉 문구 대답 처리 성공
