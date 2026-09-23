@@ -47,6 +47,10 @@ def parse_settlement_query(text: str) -> SettlementRequestContext:
     raw_json = json.loads(response.text)
     return SettlementRequestContext(**raw_json)
 
+
+# Keep the API name used by the FastAPI layer and earlier tests.
+parse_settlement_request = parse_settlement_query
+
 # Step 2: 정밀 N빵 계산 엔진
 def calculate_settlement(context: SettlementRequestContext):
     total_members = context.total_participants_count
