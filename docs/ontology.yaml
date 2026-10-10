@@ -7,8 +7,7 @@
 # 이 파일은 개념 모델이다. JSON Schema, DB 스키마, 계산 엔진은 별도 구현한다.
 
 
-version: "3.1"
-
+version: "3.3"
 classes:
   Participant: # 참여자
     description: 이 모임 정산에 연결된 사람. 비용 부담자·결제자·담당자·찬조자 역할을 맡을 수 있다.
@@ -324,6 +323,42 @@ classes:
         evidence: [로그 11, 로그 13, 로그 17, 로그 18, 로그 19]
       
 
+  RequestContext: # 정산 요청서
+    description: 사용자가 말한 참여자, 지출, 분담 조건, 안내 말투를 모아 둔 입력 정보
+    evidence: [로그 1, 로그 6, 로그 7, 로그 12, 로그 17, 로그 18, 로그 19, 로그 20]
+    # '정산 요청서'는 여러 로그의 정보를 묶기 위해 정한 설계 이름이다.
+    # 아래 값은 사용자 확인 전의 입력이며, 계산 결과나 입금 완료 기록이 아니다.
+    attributes:
+      participants: {type: list, note: "누가 관련되어 있나: 발화에 나온 참여자 이름", evidence: [로그 1, 로그 8, 로그 12]}
+      rounds: {type: list, note: "몇 차에 누가 있었나: 차수와 참석·합류·이탈 정보", evidence: [로그 12, 로그 15, 로그 17]}
+      expenses: {type: list, note: "누가 무엇을 얼마에 결제했나: 결제자, 결제 총액, 비용 항목", evidence: [로그 1, 로그 2, 로그 6, 로그 8]}
+      split_rules: {type: list, note: "누가 어떤 기준으로 나눠 내나: 항목별 균등 또는 개인별 금액 분담", evidence: [로그 6, 로그 7, 로그 19]}
+      exceptions: {type: list, note: "어느 항목에서 누구의 부담을 조정하나: 제외, 합의 소비 몫, 대신 부담", evidence: [로그 9, 로그 15, 로그 17, 로그 18, 로그 20]}
+      contributions: {type: list, note: "누가 얼마를 찬조하고 어디에 적용하나: 찬조금과 적용 대상", evidence: [로그 18]}
+      tone: {type: string, examples: [유쾌한, 정중한], note: "안내 문구를 어떤 말투로 쓰나. 사용자가 말한 표현만 기록", evidence: [로그 17, 로그 18, 로그 20]}
+      relationship: {type: string, examples: [친구, 선후배, 직장 동료], note: "안내를 보내는 사람과 받는 사람은 어떤 관계인가", evidence: [로그 9, 로그 17, 로그 18, 로그 20]}
+      reminder_handling: {type: string, examples: [개인 재안내, 기존 서비스 알림만 사용], note: "재안내를 어떤 방식으로 처리하나. 말투만 요청했다고 개인 재안내를 실행하지 않음", evidence: [로그 11, 로그 13, 로그 19]}
+    relations:
+      - identifies: Participant
+        evidence: [로그 1, 로그 8, 로그 12]
+      - describes_rounds: SettlementRound
+        evidence: [로그 12, 로그 17]
+      - describes_attendance: RoundParticipation
+        evidence: [로그 12, 로그 15]
+      - describes_expenses: Expense
+        evidence: [로그 1, 로그 8]
+      - provides_rules: SplitRule
+        evidence: [로그 6, 로그 7, 로그 19]
+      - provides_adjustments: ItemException
+        evidence: [로그 9, 로그 17, 로그 18, 로그 20]
+      - describes_contributions: Contribution
+        evidence: [로그 18]
+      - provides_message_preferences: ReminderMessage
+        evidence: [로그 17, 로그 18, 로그 20]
+      - provides_follow_up_choice: SettlementResult
+        evidence: [로그 11, 로그 13, 로그 19]
+
+
 # 구현 시 검증할 제약 — 아래는 인터뷰 문제에서 도출한 설계 제안이다.
 # 1. 모든 관계 대상은 이 파일의 클래스이다. 연결된 객체는 같은 모임 정산에 속해야 한다.
 # 2. 결제 내역에 연결된 영수증과 비용 항목 및 모임 차수는 그 지출과 모순되어서는 안 된다.
@@ -382,10 +417,11 @@ classes:
 # - store_name은 핵심 원문에 명시 근거가 없어 이번 최소 속성에서 제외.
 # - requires: 정산 재안내 제거. 모든 모임에 재요청이 필요한 것은 아니다.
 # - 말투와 관계 맥락은 로그 17·18·20을 근거로 추가하되 3종 enum을 강제하지 않는다.
-# - generated_text, 자동 카카오톡 발송, SettlementContext는 후속 구현 후보.
+# - generated_text와 자동 카카오톡 발송은 후속 구현 후보. 조건 묶음은 RequestContext로 정의한다.
 # - 찬조금 공제는 로그 18을 근거로 찬조금 + 항목별 찬조금 적용에 반영.
 # 범위 밖: 은행 이체 자동 실행, 은행 자동 입금 조회, 카카오톡 자동 발송, 훼손 영수증 복원.
 # 후속 가설: OCR/자연어 입력 -> 구조화 제안 -> 사용자 확인 -> 계산 엔진 -> 안내 문구 생성.
 # 핵심 도메인 흐름: 참여자 + 결제 내역(영수증, 비용 항목) + 찬조금(항목별 찬조금 적용)
 #                   -> 비용 나누는 기준 + 개인별 부담 조정
 #                   -> 항목별 개인 부담액 -> 송금 요청 내역 -> 입금 확인 기록 -> 필요시 ReminderMessage.
+
