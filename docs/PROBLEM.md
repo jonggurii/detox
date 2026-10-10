@@ -14,7 +14,7 @@
 
 **3. 증거**
 
-인터뷰 프로토콜과 Job Story는 [research/interviews.md](research/interviews_union.md)에 있다. 아래 로그 번호는 인터뷰 원자료의 증거 식별자를 보존한다.
+인터뷰 프로토콜과 Job Story는 [research/interviews_union.md](research/interviews_union.md)에 있다. 아래 로그 번호는 인터뷰 원자료의 증거 식별자를 보존한다.
 
 - 개인별 소비와 예외 조건에 따른 수기 계산 부담 : 균등 분할과 차액 정산이 섞이면 계산이 번거로웠고, 비주류자·중도 이탈자·찬조금을 반영하기 위해 금액을 따로 계산하거나 조율했다.
 ( “특히 N분의 1 정산과 차액 정산이 섞여 있는 정산을 할 때 매우 번거로웠어요.” — 로그 5,6,7,17,18,20 )
