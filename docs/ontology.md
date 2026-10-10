@@ -25,3 +25,49 @@
 ## 추적 경로
 
 용어 정의와 이전 영문명 대조는 `word.md`를, 문제 정의의 증거는 [`PROBLEM.md`](PROBLEM.md)와 인터뷰 로그를, 상세 도메인 정의는 [`ontology.yaml`](ontology.yaml)을, 구현 가능한 API와 수용 기준은 [`SPEC.md`](SPEC.md)를 참조한다. 증거 파일의 실제 경로와 각 문서의 링크를 저장소에서 일치시킨다. YAML의 개념 이름은 한글 대표 용어로 변경했으므로 기존 영문명을 쓰는 SPEC·API·코드는 용어 대조표에 맞춰 연결한다.
+
+
+반복된 명사 → 클래스·속성 후보: 친구/후배/정산 인원 → Participant, 여행/모임 → SettlementSession, 1차/2차 → SettlementRound, 참석/합류/이탈 기록 → RoundParticipation, 지출/결제 내역 → Expense, 영수증/영수증 사진 → Receipt, 메뉴/물품/술/음료/디저트 → Item, N분의 1/차액 정산 → SplitRule, 부담 제외/금액 조율/대신 부담 → ItemException, 개인별 부담액 → Allocation, 보내달라는 금액/정산 요청 → SettlementResult, 개인 카톡/재안내 → ReminderMessage, 유쾌하게/정중하게 → tone, 친구/선후배/직장 동료 → relationship, 이 조건들을 모은 정산 요청서 → RequestContext.
+특정 사례에서 추가한 후보: 로그 18의 찬조금 → Contribution; 어느 항목에 얼마를 뺄지 표현하는 설계 → ContributionAllocation. 로그 14와 관찰 1의 입금 대조 → PaymentRecord. 이 사례들을 여러 인터뷰에 반복됐다고 주장하지 않는다.
+반복된 동사 → 관계 후보: 결제한다(결제 내역과 결제자 연결), 참석·합류·이탈한다(사람과 차수 연결), 나눠 낸다(항목과 부담자 연결), 대신 낸다(원래 부담자와 대신 내는 사람 연결), 입금을 확인한다(요청과 입금 기록 연결), 다시 안내한다(요청과 메시지 연결).
+동의어 통합: 메뉴 = 구입 물품 = 음료·디저트 → Item; N분의 1 = N빵 → 균등 분담; 개인 톡 = 1:1 카톡 → 개인 메시지. 총무·결제자·부담자는 같은 사람의 고정 동의어가 아니라 역할이다.
+범위 밖: 은행 자동 이체, 은행 자동 입금 조회, 카카오톡 자동 발송, 훼손된 영수증 복원.
+
+
+| 실제 인터뷰 표현 | 그 말을 처리하려면 알아야 하는 것 | RequestContext 속성 |
+|---|---|---|
+| 로그 1: “결제한 친구 혹은 제가” / 로그 8: “한 번에 할 사람들끼리” | 정산에 관련된 사람은 누구인가 | `participants` |
+| 로그 12: “1차 모임 때 없던 사람이 2차 모임 때 합류” | 몇 차에 누가 참석했고 언제 합류·이탈했나 | `rounds` |
+| 로그 1: “각 금액에 해당하는 메뉴” / 로그 8: “제가 직접 … 결제한 후” | 누가 어떤 비용을 얼마에 결제했나 | `expenses` |
+| 로그 7: “N분의 1 정산과 차액 정산이 섞여” | 어떤 항목을 누구에게 어떤 방식으로 나눌 것인가 | `split_rules` |
+| 로그 9: “제가 직접 추가 지불” / 로그 18: “과장님 금액 조율” | 누구의 어느 항목 부담을 어떻게 조정할 것인가 | `exceptions` |
+| 로그 18: “팀장님 찬조금 5만 원 빼고” | 찬조한 사람과 금액, 적용할 비용은 무엇인가 | `contributions` |
+| 로그 17: “유쾌하게 보냈죠” / 로그 18: “정중하게 정산 다시 안내” | 어떤 말투로 안내할 것인가 | `tone` |
+| 로그 9: “후배들에게 정산을 요청하기 그랬어서” / 로그 17: “친구한테” | 보내는 사람과 받는 사람은 어떤 관계인가 | `relationship` |
+| 로그 19: “자동 재촉 알림이 가니까 따로 톡은 안 보냈고요” | 개인 재안내가 필요한가, 기존 알림만 사용하는가 | `reminder_handling` |
+
+RequestContext:
+  description: 사용자가 말한 참여자, 지출, 분담 조건, 안내 말투를 모아 둔 입력 정보
+  evidence: [로그 1, 로그 6, 로그 7, 로그 12, 로그 17, 로그 18, 로그 19, 로그 20]
+  attributes:
+    participants: {type: list, note: "관련된 참여자 이름", evidence: [로그 1, 로그 8, 로그 12]}
+    rounds: {type: list, note: "차수와 참석·합류·이탈 정보", evidence: [로그 12, 로그 15, 로그 17]}
+    expenses: {type: list, note: "결제자·결제 총액·비용 항목", evidence: [로그 1, 로그 2, 로그 6, 로그 8]}
+    split_rules: {type: list, note: "항목별 분담 방식과 대상자", evidence: [로그 6, 로그 7, 로그 19]}
+    exceptions: {type: list, note: "항목별·사람별 부담 조정", evidence: [로그 9, 로그 15, 로그 17, 로그 18, 로그 20]}
+    contributions: {type: list, note: "찬조자·찬조금·적용 대상", evidence: [로그 18]}
+    tone: {type: string, examples: [유쾌한, 정중한], evidence: [로그 17, 로그 18, 로그 20]}
+    relationship: {type: string, examples: [친구, 선후배, 직장 동료], evidence: [로그 9, 로그 17, 로그 18, 로그 20]}
+    reminder_handling: {type: string, examples: [개인 재안내, 기존 서비스 알림만 사용], evidence: [로그 11, 로그 13, 로그 19]}
+
+    | 필드 | 이 요청에서 받는 내용 |
+|---|---|
+| participants | 민수, 철수, 영희 |
+| rounds | 1차 식사에 세 사람 참석 |
+| expenses | 민수가 한 번 결제한 식사비 60,000원 |
+| split_rules | 해당 식사비를 세 사람이 균등하게 부담 |
+| exceptions | 언급 없음 |
+| contributions | 언급 없음 |
+| tone | 유쾌한 |
+| relationship | 친구 |
+| reminder_handling | 언급 없음. 안내 문구 요청만으로 개인 재안내를 실행하지 않음 |
