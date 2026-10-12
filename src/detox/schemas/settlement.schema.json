@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  
   "title": "SettlementRequestContext",
   "description": "사용자의 N빵 정산 요청 발화를 파싱한 구조화 계약",
   "type": "object",
