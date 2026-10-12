@@ -1,0 +1,499 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RequestContext",
+  "description": "detox: 사용자 발화에서 추출한 정산 요청서. 온톨로지 RequestContext의 최상위 9개 속성과 대응한다. 사용자 확인 전의 입력이며 계산 결과가 아니다.",
+  "$comment": "9필드 계약 최초안. 참조 인덱스, 중첩 키와 영어 enum은 기존 도메인 개념의 직렬화 규약이다. 형식 검증 통과는 의미 검증·사용자 확인·계산 가능을 뜻하지 않는다.",
+  "type": "object",
+  "properties": {
+    "participants": {
+      "type": "array",
+      "description": "발화에 나온 정산 관련 사람의 이름 또는 호칭. 알려진 사람이 없으면 []. 일부 명단일 수 있으며 실제 인원수로 간주하지 않는다.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "사용자가 말한 사람의 이름 또는 호칭."
+      }
+    },
+    "rounds": {
+      "type": "array",
+      "description": "차수별 참석 정보. 차수 언급이 없으면 키를 생략한다.",
+      "items": {
+        "$ref": "#/definitions/Round"
+      }
+    },
+    "expenses": {
+      "type": "array",
+      "description": "개별 결제 내역 후보. 알려진 결제 기록이 없으면 []. 차수 총액만으로 결제 한 건을 만들어내지 않는다.",
+      "items": {
+        "$ref": "#/definitions/Expense"
+      }
+    },
+    "split_rules": {
+      "type": "array",
+      "description": "항목별 분담 기준. 언급이 없으면 키를 생략한다.",
+      "items": {
+        "$ref": "#/definitions/SplitRule"
+      }
+    },
+    "exceptions": {
+      "type": "array",
+      "description": "항목·사람별 부담 조정 또는 확인이 필요한 조정 표현. 언급이 없으면 키를 생략한다.",
+      "items": {
+        "$ref": "#/definitions/ItemException"
+      }
+    },
+    "contributions": {
+      "type": "array",
+      "description": "찬조금과 항목별 적용 후보. 언급이 없으면 키를 생략한다.",
+      "items": {
+        "$ref": "#/definitions/Contribution"
+      }
+    },
+    "tone": {
+      "type": "string",
+      "minLength": 1,
+      "description": "사용자가 말한 안내 말투. 예: 유쾌한, 정중한. 없으면 생략하며 관계에서 추정하지 않는다."
+    },
+    "relationship": {
+      "type": "string",
+      "minLength": 1,
+      "description": "사용자가 말한 발신자와 수신자의 관계. 예: 친한 친구, 직장 동료. 없으면 생략한다."
+    },
+    "reminder_handling": {
+      "type": "string",
+      "enum": [
+        "undecided",
+        "personal_follow_up",
+        "external_service_only"
+      ],
+      "description": "undecided=미정, personal_follow_up=개인 재안내, external_service_only=기존 서비스 알림만 사용. 명시된 처리 방식만 넣고 언급이 없으면 키를 생략한다."
+    }
+  },
+  "required": [
+    "participants",
+    "expenses"
+  ],
+  "additionalProperties": false,
+  "definitions": {
+    "Round": {
+      "type": "object",
+      "description": "SettlementRound와 RoundParticipation의 입력 후보. 참석 사실만으로 분담 기준을 정하지 않는다.",
+      "properties": {
+        "round_number": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "차수 번호. 예: 1차는 1. 차수가 불명확하면 null."
+        },
+        "participant_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "발화에 명시된 이 차수의 참석 인원. 모르는 사람의 이름을 인원수에 맞춰 만들지 않는다."
+        },
+        "participant_names": {
+          "type": "array",
+          "description": "이 차수에 참석했다고 명시된 사람. 일부 이름만 알려져도 보존하되 전체 명단이라고 단정하지 않는다.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "description": "참석한 사람의 이름 또는 호칭."
+          }
+        },
+        "attendance": {
+          "type": "array",
+          "description": "합류·이탈·불참 등 사람별 참석 사실.",
+          "items": {
+            "$ref": "#/definitions/Attendance"
+          }
+        },
+        "source_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "아직 개별 결제에 연결하지 못한 차수 정보 등 원문의 관련 표현. 금액을 잃지 않도록 보존한다."
+        }
+      },
+      "required": [
+        "round_number"
+      ],
+      "additionalProperties": false
+    },
+    "Attendance": {
+      "type": "object",
+      "description": "특정 사람의 차수별 참석 기록 후보.",
+      "properties": {
+        "participant_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "발화에 나온 사람의 이름 또는 호칭. 실제 사람의 ID는 코드가 연결한다. 불명확하면 null."
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "예: 민수는 2차에 불참, 철수는 추가 주문 전에 귀가. 원문 수준으로 기록하며 시각이나 부담 제외를 추정하지 않는다."
+        }
+      },
+      "required": [
+        "participant_name",
+        "note"
+      ],
+      "additionalProperties": false
+    },
+    "Expense": {
+      "type": "object",
+      "description": "한 사람이 먼저 결제한 한 건의 Expense 후보. 차수 전체 합계나 개인의 소비 몫과 구분한다.",
+      "properties": {
+        "total_amount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "이 한 번의 결제 총액(원). 찬조금을 빼기 전 금액. 미정이면 null."
+        },
+        "payer_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "발화에 나온 사람의 이름 또는 호칭. 실제 사람의 ID는 코드가 연결한다. 불명확하면 null."
+        },
+        "round_number": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "연결된 차수 번호. 차수 언급이 없으면 키를 생략한다."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "발화에 나온 결제 내용."
+        },
+        "items": {
+          "type": "array",
+          "description": "이 결제 안의 비용 항목 후보. 모르는 내역은 만들어 채우지 않는다.",
+          "items": {
+            "$ref": "#/definitions/Item"
+          }
+        },
+        "receipt_total_amount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "제공된 영수증 근거에서 읽은 총금액 후보. total_amount와 별도로 대조하며 불일치 값을 덮어쓰지 않는다."
+        },
+        "source_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "결제자·금액·항목의 출처나 모호함을 확인할 원문 표현. 파일 위치와 원문 전체는 코드가 별도로 보존한다."
+        }
+      },
+      "required": [
+        "total_amount",
+        "payer_name"
+      ],
+      "additionalProperties": false
+    },
+    "Item": {
+      "type": "object",
+      "description": "Item 입력 후보. 사람별 부담액이나 영수증의 단가가 아닌 항목 전체 금액.",
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "발화에 나온 항목 이름. 미정이면 null."
+        },
+        "amount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "해당 항목 전체 금액(원). 찬조·예외 적용 전 금액. 미정이면 null."
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "description": "발화에 명시된 항목 종류. 예: 주류, 식사. 고정 enum으로 제한하지 않는다."
+        },
+        "occurrence_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "예: 철수가 나간 뒤 추가 주문한 술. 원문에 있는 전후 관계만 기록한다."
+        }
+      },
+      "required": [
+        "name",
+        "amount"
+      ],
+      "additionalProperties": false
+    },
+    "SplitRule": {
+      "type": "object",
+      "description": "SplitRule 입력 후보. 해당 항목의 방식·기본 대상·합의된 개인 금액.",
+      "properties": {
+        "expense_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "이 출력의 expenses 배열에서 대상 결제의 위치. 첫 결제는 0. 연결할 결제가 없거나 불명확하면 null. 영구 ID가 아니다."
+        },
+        "item_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "해당 결제의 items 배열에서 대상 항목의 위치. 첫 항목은 0. 연결이 불명확하면 null. 실제 범위 검사는 후처리가 한다."
+        },
+        "method": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "equal",
+            "explicit_amount",
+            null
+          ],
+          "description": "equal=남은 금액 똑같이 나누기, explicit_amount=사람별 금액 정하기. 합의된 방식이 없으면 null."
+        },
+        "participant_names": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "description": "예외 적용 전 기본 부담 대상자 전체. 명단이 확정되지 않으면 null. 모임 참석자를 자동 복사하지 않는다.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "description": "기본 부담 대상자의 이름 또는 호칭."
+          }
+        },
+        "individual_amounts": {
+          "type": "array",
+          "description": "explicit_amount일 때 사용자가 명시한 항목별 개인 소비 몫. 최종 Allocation 계산 결과가 아니다.",
+          "items": {
+            "$ref": "#/definitions/IndividualAmount"
+          }
+        },
+        "remainder_payer_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "원 단위 나머지를 부담하기로 명시한 사람. 언급이 없으면 생략한다. 계산 코드가 실제 나머지를 구한다."
+        },
+        "basis_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "대상·분담 방식·단수 처리 등 합의 내용을 확인할 원문 표현."
+        }
+      },
+      "required": [
+        "expense_index",
+        "item_index",
+        "method",
+        "participant_names"
+      ],
+      "additionalProperties": false
+    },
+    "IndividualAmount": {
+      "type": "object",
+      "description": "사용자가 직접 지정한 한 사람의 항목 소비 몫. 대신 부담을 이전하기 전의 입력 금액.",
+      "properties": {
+        "participant_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "발화에 나온 사람의 이름 또는 호칭. 실제 사람의 ID는 코드가 연결한다. 불명확하면 null."
+        },
+        "amount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "사용자가 지정한 소비 몫(원). 입력에서 모르면 null. 모델이 나눗셈으로 채우지 않는다."
+        }
+      },
+      "required": [
+        "participant_name",
+        "amount"
+      ],
+      "additionalProperties": false
+    },
+    "ItemException": {
+      "type": "object",
+      "description": "ItemException 입력 후보. 어느 항목에서 누구의 부담을 어떻게 조정하는지.",
+      "properties": {
+        "expense_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "이 출력의 expenses 배열에서 대상 결제의 위치. 첫 결제는 0. 연결할 결제가 없거나 불명확하면 null. 영구 ID가 아니다."
+        },
+        "item_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "해당 결제의 items 배열에서 대상 항목의 위치. 첫 항목은 0. 연결이 불명확하면 null. 실제 범위 검사는 후처리가 한다."
+        },
+        "participant_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "발화에 나온 사람의 이름 또는 호칭. 실제 사람의 ID는 코드가 연결한다. 불명확하면 null."
+        },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "exclude",
+            "fixed_amount",
+            "covered_by_other",
+            null
+          ],
+          "description": "exclude=부담 제외, fixed_amount=합의한 소비 몫 지정, covered_by_other=다른 사람이 대신 부담. 방식이 미정이면 null."
+        },
+        "fixed_amount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "fixed_amount일 때 해당 항목에서 이 사람이 소비한 것으로 합의한 총액. 추가 금액이나 할인액이 아니다. 미합의면 null."
+        },
+        "covered_by_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "covered_by_other일 때 대신 부담하는 사람. 먼저 결제한 사람과 다를 수 있다. 모르면 null."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "조정을 요구한 원문 표현. 예: 과장님은 맥주 한 잔만 마셨다. 이 사실만으로 종류나 금액을 추정하지 않는다."
+        }
+      },
+      "required": [
+        "expense_index",
+        "item_index",
+        "participant_name",
+        "kind",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "Contribution": {
+      "type": "object",
+      "description": "Contribution 입력 후보. 소비 몫 송금과 구별되는 찬조금. 수령·적용 확정 상태는 코드와 담당자가 관리한다.",
+      "properties": {
+        "expense_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "이 출력의 expenses 배열에서 대상 결제의 위치. 첫 결제는 0. 연결할 결제가 없거나 불명확하면 null. 영구 ID가 아니다."
+        },
+        "contributor_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "발화에 나온 사람의 이름 또는 호칭. 실제 사람의 ID는 코드가 연결한다. 불명확하면 null."
+        },
+        "amount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "찬조금 총액(원). 미정이면 null. 적용 금액을 뺀 잔액이나 송금 요청액이 아니다."
+        },
+        "uses": {
+          "type": "array",
+          "description": "이 찬조금 중 어느 비용 항목에 얼마를 적용하는지. 원문에 없으면 생략하며 비율을 추정하지 않는다.",
+          "items": {
+            "$ref": "#/definitions/ContributionUse"
+          }
+        },
+        "funding_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "발화에 나온 전달·충당 방식 또는 약속 상태. 실제 전달되지 않은 약속을 수령 완료로 바꾸지 않는다."
+        }
+      },
+      "required": [
+        "expense_index",
+        "contributor_name",
+        "amount"
+      ],
+      "additionalProperties": false
+    },
+    "ContributionUse": {
+      "type": "object",
+      "description": "ContributionAllocation 입력 후보. 상위 찬조금이 연결된 결제 안의 항목만 참조한다.",
+      "properties": {
+        "item_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "해당 결제의 items 배열에서 대상 항목의 위치. 첫 항목은 0. 연결이 불명확하면 null. 실제 범위 검사는 후처리가 한다."
+        },
+        "amount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "이 항목에 적용하기로 명시한 찬조금(원). 적용액 미정이면 null."
+        },
+        "basis_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "항목별 적용액의 원문 근거."
+        }
+      },
+      "required": [
+        "item_index",
+        "amount"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
