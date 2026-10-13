@@ -5,8 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from detox.parser import parse_settlement_request
-from detox.schemas.detox_context import SettlementRequestContext
+from settlements.parser import parse_settlement_request
+from settlements.schemas.detox_context import SettlementRequestContext
 
 
 class ParserTests(unittest.TestCase):

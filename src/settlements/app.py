@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from detox.parser import parse_settlement_request
+from settlements.parser import parse_settlement_request
 
 try:
     from fastapi import FastAPI
