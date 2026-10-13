@@ -1,6 +1,7 @@
 # 복합 N빵 정산 미니 도메인 온톨로지 — docs/ontology.yaml
 # 근거: interviews_union.md의 B절 로그 1~20, C절 관찰 1,2.
-# v3.1: 클래스와 관계 대상은 영문 식별자, 한글 대표 용어는 주석으로 표기한다. 속성·관계 이름·상태값·설명은 word.md의 한글 표현을 유지한다.
+# v3.3: RequestContext 9개 입력 필드와 기존 클래스·속성의 대응 및 안내 조건의 사용 범위를 명시한다.
+# 클래스는 영문 식별자, 도메인 속성은 한글 대표 용어를 사용한다. RequestContext의 영문 키·코드 값은 스키마와 맞춘 입력 표기이다.
 # evidence는 문제/행동의 출처이다. 클래스 분리, ID, enum, 상태 전이는 설계 제안이다.
 # ID 외 모든 속성과 모든 관계에 evidence를 표시한다. ID는 클래스 근거를 상속한다.
 # cardinality, derived, optional, note는 설명용 메타데이터이며 실행되는 검증 규칙이 아니다.
@@ -260,7 +261,7 @@ classes:
       송금 요청 시각: {type: string, format: date-time, optional: true, evidence: [로그 11, 로그 13]}
       입금 확인 상태: {type: enum, values: [입금 미확인, 입금 확인 완료], derived: true, note: "입금 확인 완료는 확인된 입금 확인 기록 금액 합계가 이 결제자에게 보낼 금액와 같을 때. 입금 미확인는 미입금 단정이 아니다.", evidence: [로그 14, 관찰 1]}
       상대가 말한 송금 가능 시점: {type: string, optional: true, note: "예: 월급날 이후. 상대가 말하지 않은 날짜를 임의로 생성하지 않는다.", evidence: [로그 13]}
-      재안내 처리 방식: {type: enum, values: [미정, 개인 재안내, 기존 서비스 알림만 사용], note: "설계 제안. 외부 서비스 알림을 쓰는 경우 사용자 확인 없이 개인 재요청을 중복 제안하지 않는다. 서비스 연동·자동 발송 기능을 뜻하지 않는다.", evidence: [로그 11, 로그 13, 로그 17, 로그 18, 로그 19]}
+      재안내 처리 방식: {type: enum, values: [미정, 개인 재안내, 기존 서비스 알림만 사용], note: "이 송금 요청 한 건에 적용하는 처리 방식이다. RequestContext.reminder_handling의 미정·개인 재안내·기존 서비스 알림만 사용에 대응하는 영문 코드 값을 해석하고 대상 청구와 사용자 의사를 확인한 뒤 적용한다. 외부 서비스 알림을 쓰는 경우 사용자 확인 없이 개인 재요청을 중복 제안하지 않는다. 서비스 연동·자동 발송 기능을 뜻하지 않는다.", evidence: [로그 11, 로그 13, 로그 17, 로그 18, 로그 19]}
     relations:
       - 송금 요청의 결제 내역: Expense # 결제 내역
         cardinality: "1"
@@ -304,8 +305,8 @@ classes:
       재안내 ID: {type: string, key: true}
       재안내 문구: {type: string, optional: true, note: "개인 메시지는 사용자가 확인한 문구를 기록한다. 외부 알림의 원문을 모르면 비워 둔다. 자동 생성은 구현 후보이다.", evidence: [로그 11, 로그 13, 로그 17, 로그 18, 로그 19, 로그 20]}
       재안내 수단: {type: enum, values: [개인 메시지, 기존 서비스 알림], note: "개인 연락과 기존 서비스 알림을 구분하는 설계 값. 알림이 실제 발송되었다는 뜻은 아니다.", evidence: [로그 17, 로그 18, 로그 19, 로그 20]}
-      원하는 말투: {type: string, optional: true, examples: [유쾌한, 정중한], note: "사용자가 원하는 말투. 고정 3종 분류나 관계에 따른 자동 결정을 강제하지 않는다.", evidence: [로그 17, 로그 18, 로그 20]}
-      보내는 사람과 받는 사람의 관계: {type: string, optional: true, examples: [친구, 직장 동료], note: "이 메시지의 발신자와 수신자 사이 맥락. 수신자의 고정 성격으로 저장하지 않는다.", evidence: [로그 17, 로그 18, 로그 20]}
+      원하는 말투: {type: string, optional: true, examples: [유쾌한, 정중한], note: "이 재안내 메시지에 적용할 말투. RequestContext.tone에서 추출한 희망 말투를 대상 메시지에 맞게 확인해 사용한다. 고정 3종 분류나 관계에 따른 자동 결정을 강제하지 않는다.", evidence: [로그 17, 로그 18, 로그 20]}
+      보내는 사람과 받는 사람의 관계: {type: string, optional: true, examples: [친구, 직장 동료], note: "이 재안내 메시지의 발신자와 수신자 사이 맥락. RequestContext.relationship의 입력을 실제 발신자·수신자와 대조해 적용한다. 수신자의 고정 성격으로 저장하지 않는다.", evidence: [로그 17, 로그 18, 로그 20]}
       재안내 시점 메모: {type: string, optional: true, note: "하루 뒤, 월요일 출근 후, 상대가 말한 송금 가능 시점 등. 로그 19의 24시간은 해당 사례의 기존 서비스 동작이며 새 앱의 고정 정책이 아니다.", evidence: [로그 11, 로그 13, 로그 17, 로그 18, 로그 19]}
       발송 확인 상태: {type: enum, values: [예정, 발송 확인], note: "설계 제안. 발송 여부를 확인한 경우만 발송 확인으로 기록한다.", evidence: [로그 11, 로그 17, 로그 18, 로그 19]}
     relations:
@@ -324,39 +325,145 @@ classes:
       
 
   RequestContext: # 정산 요청서
-    description: 사용자가 말한 참여자, 지출, 분담 조건, 안내 말투를 모아 둔 입력 정보
+    description: 기존 온톨로지의 개념을 사용해 이번 사용자 발화에서 추출한 정산 조건을 묶은 입력 구조.
     evidence: [로그 1, 로그 6, 로그 7, 로그 12, 로그 17, 로그 18, 로그 19, 로그 20]
-    # '정산 요청서'는 여러 로그의 정보를 묶기 위해 정한 설계 이름이다.
-    # 아래 값은 사용자 확인 전의 입력이며, 계산 결과나 입금 완료 기록이 아니다.
+    # parse_query가 사용자 발화를 읽고 이 구조의 데이터를 출력한다.
+    # 아래 영문 필드는 기존 클래스의 속성·관계를 입력에서 찾기 위한 이름이다.
+    # 클래스 전체를 복사한 객체나 검토가 끝난 기록이라는 뜻은 아니다. 예: participants는 Participant의 이름 목록이다.
+    # evidence는 정보가 필요한 이유의 근거이며, 아래 note는 어느 기존 개념에 대응하는지 설명한다.
+    # 중첩 키·항목 참조·null 허용·검증 규칙은 request_context.schema.json에서 구체화한다.
+    # tone·relationship을 최초 안내에도 공통으로 사용하는 것은 기존 재안내 개념을 재사용한 설계 확장이다.
+    # 관련 인터뷰 evidence를 최초 안내 기능 자체가 검증됐다는 뜻으로 해석하지 않는다.
     attributes:
-      participants: {type: list, note: "누가 관련되어 있나: 발화에 나온 참여자 이름", evidence: [로그 1, 로그 8, 로그 12]}
-      rounds: {type: list, note: "몇 차에 누가 있었나: 차수와 참석·합류·이탈 정보", evidence: [로그 12, 로그 15, 로그 17]}
-      expenses: {type: list, note: "누가 무엇을 얼마에 결제했나: 결제자, 결제 총액, 비용 항목", evidence: [로그 1, 로그 2, 로그 6, 로그 8]}
-      split_rules: {type: list, note: "누가 어떤 기준으로 나눠 내나: 항목별 균등 또는 개인별 금액 분담", evidence: [로그 6, 로그 7, 로그 19]}
-      exceptions: {type: list, note: "어느 항목에서 누구의 부담을 조정하나: 제외, 합의 소비 몫, 대신 부담", evidence: [로그 9, 로그 15, 로그 17, 로그 18, 로그 20]}
-      contributions: {type: list, note: "누가 얼마를 찬조하고 어디에 적용하나: 찬조금과 적용 대상", evidence: [로그 18]}
-      tone: {type: string, examples: [유쾌한, 정중한], note: "안내 문구를 어떤 말투로 쓰나. 사용자가 말한 표현만 기록", evidence: [로그 17, 로그 18, 로그 20]}
-      relationship: {type: string, examples: [친구, 선후배, 직장 동료], note: "안내를 보내는 사람과 받는 사람은 어떤 관계인가", evidence: [로그 9, 로그 17, 로그 18, 로그 20]}
-      reminder_handling: {type: string, examples: [개인 재안내, 기존 서비스 알림만 사용], note: "재안내를 어떤 방식으로 처리하나. 말투만 요청했다고 개인 재안내를 실행하지 않음", evidence: [로그 11, 로그 13, 로그 19]}
+      participants:
+        type: list
+        optional: false
+        description: 이번 발화에 나온 정산 관련 사람의 이름 또는 호칭 목록.
+        note: >-
+          Participant.이름에 대응하는 입력이다. 참여자 ID·계좌를 포함한 Participant 전체가 아니다.
+          결제자·비용 부담자·찬조자를 포함할 수 있으며 이 목록 전체를 모든 항목의 부담자로 삼지 않는다.
+          이름과 실제 참여자의 연결은 확인하며, 아는 이름이 없어도 키를 두고 빈 목록을 사용한다.
+        evidence: [로그 1, 로그 8, 로그 12]
+      rounds:
+        type: list
+        optional: true
+        description: 차수와 그 차수의 참석·합류·이탈 정보.
+        note: >-
+          SettlementRound.차수 번호, RoundParticipation.합류·이탈 메모와 참석한 사람·차수 관계에 대응한다.
+          발화에 나온 참석 인원·이름과 아직 결제에 연결하지 못한 차수 정보도 입력에 보존한다.
+          참석 사실만으로 항목 부담 제외나 시간 비례 분담을 결정하지 않는다.
+        evidence: [로그 12, 로그 15, 로그 17]
+      expenses:
+        type: list
+        optional: false
+        description: 누가 어떤 비용을 얼마에 결제했는지와 그 비용 항목·영수증 근거.
+        note: >-
+          Expense.결제 내용·결제한 총금액·먼저 결제한 사람 관계,
+          Item.항목 이름·항목 금액, Receipt.영수증에서 읽은 총금액에 대응한다.
+          결제 한 건은 한 사람이 먼저 결제한 비용이며 차수 합계·항목 금액·개인 부담액과 구별한다.
+          알려진 개별 결제 기록이 없어도 키를 두고 빈 목록을 사용한다.
+        evidence: [로그 1, 로그 2, 로그 6, 로그 8]
+      split_rules:
+        type: list
+        optional: true
+        description: 각 비용 항목을 누구에게 어떤 방식으로 나눌지에 대한 입력 조건.
+        note: >-
+          SplitRule.나누는 방식·비용 나누는 근거와 나눌 비용 항목·나눠 낼 기본 대상자 관계에 대응한다.
+          스키마의 equal은 '남은 금액 똑같이 나누기', explicit_amount는 '사람별 금액 정하기'의 코드 값이다.
+          사용자가 지정한 개인 소비 몫은 계산에 쓸 입력이고 최종 Allocation이 아니다.
+        evidence: [로그 6, 로그 7, 로그 19]
+      exceptions:
+        type: list
+        optional: true
+        description: 특정 항목에서 특정 사람의 부담을 제외·조정하거나 다른 사람이 대신 부담하는 조건.
+        note: >-
+          ItemException.부담 조정 방식·이 항목의 합의 소비 몫·조정 이유와 비용 항목·대상 사람·대신 내는 사람 관계에 대응한다.
+          스키마의 exclude는 '이 항목은 부담 안 함', fixed_amount는 '이 항목의 내 몫 정하기',
+          covered_by_other는 '다른 사람이 대신 내기'의 코드 값이다.
+          한 잔만 마셨다는 사실에서 합의 금액을 만들지 않고 확인할 조정 표현으로 남긴다.
+        evidence: [로그 9, 로그 15, 로그 17, 로그 18, 로그 20]
+      contributions:
+        type: list
+        optional: true
+        description: 찬조한 사람·찬조금 총액·대상 결제·항목별 적용액과 전달·충당 정보.
+        note: >-
+          Contribution.찬조금 총액·찬조금 전달·충당 메모 및 찬조한 사람·대상 결제 관계,
+          ContributionAllocation.이 항목에 적용할 찬조금·찬조금 적용 근거 및 대상 항목 관계에 대응한다.
+          찬조 총액과 항목별 적용액을 구분하고, 원문에 없는 적용 비율이나 전달 완료를 추정하지 않는다.
+        evidence: [로그 18]
+      tone:
+        type: string
+        optional: true
+        description: 사용자가 이번 최초 안내 또는 재안내에 요청한 말투.
+        note: >-
+          ReminderMessage.원하는 말투와 같은 표현 조건을 입력에서 추출한다.
+          재안내에서는 해당 메시지의 말투로 연결하고, 최초 안내에서는 문구 생성의 입력으로 사용한다.
+          최초 안내 문구를 만든 것만으로 ReminderMessage 기록이 생기는 것은 아니다.
+          언급이 없으면 생략하며 관계를 보고 말투를 자동 결정하지 않는다.
+        examples: [유쾌한, 정중한]
+        evidence: [로그 17, 로그 18, 로그 20]
+      relationship:
+        type: string
+        optional: true
+        description: 이번 최초 안내 또는 재안내를 보내는 사람과 받는 사람의 관계.
+        note: >-
+          ReminderMessage.보내는 사람과 받는 사람의 관계에 대응하는 입력이다.
+          최초 안내에서도 문구 생성에 같은 관계 맥락을 사용한다. 참여자의 고정 성격이나 비용 분담 조건이 아니다.
+          대상마다 관계·말투가 다르면 안내 요청을 나누거나 대상을 확인한다. 언급이 없으면 생략한다.
+        examples: [친구, 선후배, 직장 동료]
+        evidence: [로그 9, 로그 17, 로그 18, 로그 20]
+      reminder_handling:
+        type: enum
+        optional: true
+        description: 이번 요청에서 사용자가 선택한 재안내 처리 방식.
+        values: [undecided, personal_follow_up, external_service_only]
+        note: >-
+          SettlementResult.재안내 처리 방식에 대응한다. 스키마와 같은 영문 코드 값을 사용하며
+          undecided='미정', personal_follow_up='개인 재안내', external_service_only='기존 서비스 알림만 사용'으로 해석한다.
+          언급이 없으면 생략하고 사용자가 미정이라고 말했을 때만 undecided를 사용한다.
+          대상 송금 요청과 사용자 의사를 확인한 뒤 적용하며, 모든 청구에 자동 적용하거나 기존 방식을 덮어쓰지 않는다.
+          말투·안내 문구 요청만으로 개인 재안내를 선택하지 않는다. 이 값은 실제 발송 여부가 아니다.
+        evidence: [로그 11, 로그 13, 로그 17, 로그 18, 로그 19]
     relations:
       - identifies: Participant
+        note: "participants의 이름을 실제 참여자와 연결한다. 동명이인·미상 인물은 확인한다."
         evidence: [로그 1, 로그 8, 로그 12]
       - describes_rounds: SettlementRound
+        note: "rounds의 차수 정보를 연결한다."
         evidence: [로그 12, 로그 17]
       - describes_attendance: RoundParticipation
+        note: "rounds의 사람별 참석·합류·이탈 정보를 연결한다."
         evidence: [로그 12, 로그 15]
       - describes_expenses: Expense
+        note: "expenses의 개별 결제 정보를 연결한다."
         evidence: [로그 1, 로그 8]
+      - describes_items: Item
+        note: "expenses에 포함된 항목 이름·금액을 해당 결제의 비용 항목에 연결한다."
+        evidence: [로그 1, 로그 2, 로그 6]
+      - describes_receipts: Receipt
+        note: "expenses의 영수증 근거를 해당 결제의 증빙에 연결한다. 원본 첨부 연결은 코드가 관리한다."
+        evidence: [로그 1, 로그 8, 관찰 1]
       - provides_rules: SplitRule
+        note: "split_rules의 입력 조건을 대상 항목·사람과 확인한 뒤 연결한다."
         evidence: [로그 6, 로그 7, 로그 19]
       - provides_adjustments: ItemException
+        note: "exceptions의 부담 조정을 대상 항목·사람과 확인한 뒤 연결한다."
         evidence: [로그 9, 로그 17, 로그 18, 로그 20]
       - describes_contributions: Contribution
+        note: "contributions의 찬조자·총액·대상 결제·전달 정보를 연결한다."
+        evidence: [로그 18]
+      - describes_contribution_uses: ContributionAllocation
+        note: "contributions의 항목별 적용액을 원래 찬조금과 비용 항목에 연결한다."
         evidence: [로그 18]
       - provides_message_preferences: ReminderMessage
+        note: "재안내를 만들 때 tone·relationship을 해당 메시지에 연결한다. 최초 안내만 요청한 경우에는 이 관계를 만들지 않는다."
         evidence: [로그 17, 로그 18, 로그 20]
       - provides_follow_up_choice: SettlementResult
+        note: "reminder_handling의 코드 값을 대상 송금 요청의 재안내 처리 방식으로 해석해 적용한다."
         evidence: [로그 11, 로그 13, 로그 19]
+    # 입력 검토: 생략·빈 목록·미정 값은 기존 기록 삭제나 '조건 없음이 확인됨'을 뜻하지 않는다.
+    # 원문과 입력 버전을 보존하고, 부족한 사람·금액·항목·적용 대상을 확인한 뒤 계산한다.
+    # 최종 Allocation·SettlementResult 금액과 PaymentRecord의 입금 확인 상태는 이 요청서에서 생성·확정하지 않는다.
 
 
 # 구현 시 검증할 제약 — 아래는 인터뷰 문제에서 도출한 설계 제안이다.
