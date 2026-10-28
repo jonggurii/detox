@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """추출, 로컬 스키마 검증, 입력 검토. 사용자 확인은 별도 단계다."""
 from collections import Counter, defaultdict
 from functools import lru_cache
@@ -413,10 +414,124 @@ async def parse_settlement_query_async(text, **kwargs):
 
 def parse_settlement_query(text, **kwargs):
     return parse_and_review(text, **kwargs).context
+=======
+
+import os
+import json
+import time
+from pathlib import Path
+
+from google import genai
+from dotenv import load_dotenv
+from jsonschema import Draft7Validator, ValidationError
+
+# 현재 파일: src/detox/parser.py
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent.parent
+
+PROMPT_PATH = BASE_DIR / "prompts" / "parse_query.md"
+SCHEMA_PATH = BASE_DIR / "schemas" / "request_context.schema.json"
+
+load_dotenv(PROJECT_ROOT / ".env")
+
+
+def load_parser_contract():
+    # JSON Schema 읽기
+    schema = json.loads(
+        SCHEMA_PATH.read_text(encoding="utf-8")
+    )
+    Draft7Validator.check_schema(schema)
+
+    # Markdown 프롬프트 읽기
+    content = PROMPT_PATH.read_text(encoding="utf-8")
+
+    start_marker = "<!-- prompt:start -->"
+    end_marker = "<!-- prompt:end -->"
+
+    if (
+        content.count(start_marker) != 1
+        or content.count(end_marker) != 1
+    ):
+        raise ValueError("프롬프트 마커가 올바르지 않습니다.")
+
+    start = content.index(start_marker) + len(start_marker)
+    end = content.index(end_marker)
+
+    if start >= end:
+        raise ValueError("프롬프트 마커 순서가 잘못되었습니다.")
+
+    prompt = content[start:end].strip()
+
+    # 프롬프트의 지정된 위치에 JSON Schema 삽입
+    prompt = prompt.replace(
+        "{output_schema}",
+        json.dumps(schema, ensure_ascii=False)
+    )
+
+    return prompt, schema
+
+
+def parse_settlement_query(user_text: str) -> dict:
+    if not user_text.strip():
+        raise ValueError("사용자 입력이 비어 있습니다.")
+
+    prompt, schema = load_parser_contract()
+
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY가 설정되지 않았습니다.")
+
+    client = genai.Client(api_key=api_key)
+
+    # 형식 오류에 한해 최대 1회 재시도
+    for attempt in range(2):
+        start_time = time.perf_counter()
+
+        print("Gemini API 요청 중...", flush=True)
+
+        response = client.models.generate_content(
+            model=os.getenv(
+                "GEMINI_MODEL",
+                "gemini-3.5-flash-lite"
+            ),
+            contents=user_text,
+            config={
+                "system_instruction": prompt,
+                "response_mime_type": "application/json",
+            }
+        )
+
+        elapsed = time.perf_counter() - start_time
+
+        print("Gemini API 응답 수신 완료!", flush=True)
+
+        try:
+            if not response.text:
+                raise ValueError("빈 응답")
+
+            result = json.loads(response.text)
+
+            # 최신 JSON Schema 검증
+            Draft7Validator(schema).validate(result)
+
+            return result
+
+        except (json.JSONDecodeError, ValidationError, ValueError) as e:
+            if attempt == 1:
+                raise ValueError(
+                    f"구조화 출력 검증 실패: {e}"
+                ) from e
+
+            print("형식 검증 실패, 1회 재시도합니다.")
+
+    raise RuntimeError("파싱 실패")
+>>>>>>> 80a5028 (Connect Gemini parser to settlement engine)
 
 
 parse_settlement_request = parse_settlement_query
 
+<<<<<<< HEAD
 
 def review_context(
     context: RequestContext | dict[str, Any],
@@ -921,10 +1036,16 @@ if __name__ == "__main__":
     import time
 
     print("복합 N빵 정산 파서 통합 테스트")
+=======
+
+if __name__ == "__main__":
+    print("복합 N빵 정산 자연어 파싱 테스트")
+>>>>>>> 80a5028 (Connect Gemini parser to settlement engine)
     print("-" * 45)
 
     user_text = input("정산 내용을 입력하세요: ")
 
+<<<<<<< HEAD
     start = time.perf_counter()
 
     result = parse_and_review(user_text)
@@ -952,3 +1073,15 @@ if __name__ == "__main__":
     print(f"프롬프트 버전: {result.prompt_version}")
     print(f"API 시도 횟수: {result.attempts}")
     print(f"총 소요 시간: {elapsed:.2f}초")
+=======
+    result = parse_settlement_query(user_text)
+
+    print("\n===== LLM 구조화 출력 결과 =====")
+    print(json.dumps(
+        result,
+        ensure_ascii=False,
+        indent=2
+    ))
+
+    print("\nJSON Schema 검증 통과")
+>>>>>>> 80a5028 (Connect Gemini parser to settlement engine)
