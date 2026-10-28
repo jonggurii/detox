@@ -122,7 +122,14 @@ def test_reject_remainder_payer_who_transferred_all_share():
     }
 
     issues = review_context(context)
-    assert any("본인 몫을 다른 사람에게 이전" in issue for issue in issues)
+    assert any(
+        issue.code == "invalid_remainder_payer"
+        and issue.path == "expenses[0].items[0]"
+        for issue in issues
+    ), [
+        issue.model_dump()
+        for issue in issues
+    ]
 
     with pytest.raises(CalculationError):
         calculate_settlement(context)
