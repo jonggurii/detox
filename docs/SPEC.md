@@ -1,7 +1,4 @@
-제품 스펙 v1.1 — Smart Settlement Agent
-저장 위치: docs/SPEC.md
-상태: 팀 검토용 초안 · 작성일: 2026-10-13
-작성 기준: 강의 04의 제품 스펙 6절 양식 + 강의 05의 단일 함수 위임·골든 테스트 지침, 인터뷰 통합본, 온톨로지 v3.4, 현재 RequestContext 스키마와 parser 수정본.
+제품 스펙 v3.1 
 
 이 문서는 무엇을 만들고 어떤 결과를 통과로 볼지 정의한다. 도메인 정의의 정본은 docs/ontology.yaml, 문제의 근거는 docs/PROBLEM.md와 docs/research/interviews_union.md이다. 인터뷰 로그 번호는 통합본의 번호를 유지한다.
 
