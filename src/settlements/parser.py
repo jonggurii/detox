@@ -1,395 +1,915 @@
-from __future__ import annotations
-
-from fractions import Fraction
+"""추출, 로컬 스키마 검증, 입력 검토. 사용자 확인은 별도 단계다."""
+from collections import Counter, defaultdict
+from functools import lru_cache
+from hashlib import sha256
+from pathlib import Path
+from typing import Any, Literal
+import asyncio
 import json
 import os
-from pathlib import Path
 import re
-from typing import Any, Literal
 
-from dotenv import load_dotenv
-from google import genai
-from pydantic import BaseModel, ConfigDict, Field
+from jsonschema import Draft7Validator
+from jsonschema.validators import extend
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
-load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
-SCHEMA_PATH = BASE_DIR / "schemas" / "request_context.schema.json"
-PROMPT_PATH = BASE_DIR / "prompts" / "parse_query.md"
+DEFAULT_SCHEMA_PATH = BASE_DIR / "schemas" / "request_context.schema.json"
+DEFAULT_PROMPT_PATH = BASE_DIR / "prompts" / "parse_query.md"
 
-SHORT_SCHEMA_GUIDE = (
-    "응답은 response_json_schema로 전달된 RequestContext(최상위 9필드 계약) "
-    "규격을 엄격히 따르는 단일 JSON 객체여야 한다."
+CONTEXT_FIELDS = {
+    "participants",
+    "rounds",
+    "expenses",
+    "split_rules",
+    "exceptions",
+    "contributions",
+    "tone",
+    "relationship",
+    "reminder_handling",
+}
+
+ContextValidator = extend(
+    Draft7Validator,
+    type_checker=Draft7Validator.TYPE_CHECKER.redefine(
+        "integer",
+        lambda checker, value: type(value) is int,
+    ),
 )
 
 
-# ==========================================
-# 1. 9필드 RequestContext Pydantic 스키마
-# ==========================================
-class Attendance(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    participant_name: str | None = Field(default=None, min_length=1)
-    note: str = Field(min_length=1)
+class ParserError(RuntimeError):
+    pass
 
 
-class Round(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    round_number: int | None = Field(default=None, ge=1)
-    participant_count: int | None = Field(default=None, ge=1)
-    participant_names: list[str] | None = None
-    attendance: list[Attendance] | None = None
-    source_note: str | None = Field(default=None, min_length=1)
+class ParserConfigurationError(ParserError):
+    pass
 
 
-class Item(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str | None = Field(default=None, min_length=1)
-    amount: int | None = Field(default=None, ge=0)
-    category: str | None = Field(default=None, min_length=1)
-    occurrence_note: str | None = Field(default=None, min_length=1)
+class ParserAPIError(ParserError):
+    pass
 
 
-class Expense(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    total_amount: int | None = Field(default=None, ge=0)
-    payer_name: str | None = Field(default=None, min_length=1)
-    round_number: int | None = Field(default=None, ge=1)
-    description: str | None = Field(default=None, min_length=1)
-    items: list[Item] | None = None
-    receipt_total_amount: int | None = Field(default=None, ge=0)
-    source_note: str | None = Field(default=None, min_length=1)
+class OutputFormatError(ParserError):
+    pass
 
 
-class IndividualAmount(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    participant_name: str | None = Field(default=None, min_length=1)
-    amount: int | None = Field(default=None, ge=0)
-
-
-class SplitRule(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    expense_index: int | None = Field(default=None, ge=0)
-    item_index: int | None = Field(default=None, ge=0)
-    method: Literal["equal", "explicit_amount"] | None = None
-    participant_names: list[str] | None = None
-    individual_amounts: list[IndividualAmount] | None = None
-    remainder_payer_name: str | None = Field(default=None, min_length=1)
-    basis_note: str | None = Field(default=None, min_length=1)
-
-
-class ItemException(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    expense_index: int | None = Field(default=None, ge=0)
-    item_index: int | None = Field(default=None, ge=0)
-    participant_name: str | None = Field(default=None, min_length=1)
-    kind: Literal["exclude", "fixed_amount", "covered_by_other"] | None = None
-    fixed_amount: int | None = Field(default=None, ge=0)
-    covered_by_name: str | None = Field(default=None, min_length=1)
-    reason: str = Field(min_length=1)
-
-
-class ContributionUse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    item_index: int | None = Field(default=None, ge=0)
-    amount: int | None = Field(default=None, ge=1)
-    basis_note: str | None = Field(default=None, min_length=1)
-
-
-class Contribution(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    expense_index: int | None = Field(default=None, ge=0)
-    contributor_name: str | None = Field(default=None, min_length=1)
-    amount: int | None = Field(default=None, ge=1)
-    uses: list[ContributionUse] | None = None
-    funding_note: str | None = Field(default=None, min_length=1)
+class ManualInputRequired(ParserError):
+    pass
 
 
 class RequestContext(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    participants: list[str] = Field(default_factory=list)
-    rounds: list[Round] | None = None
-    expenses: list[Expense] = Field(default_factory=list)
-    split_rules: list[SplitRule] | None = None
-    exceptions: list[ItemException] | None = None
-    contributions: list[Contribution] | None = None
-    tone: str | None = Field(default=None, min_length=1)
-    relationship: str | None = Field(default=None, min_length=1)
-    reminder_handling: (
-        Literal["undecided", "personal_follow_up", "external_service_only"] | None
-    ) = None
+    participants: list[str]
+    expenses: list[dict[str, Any]]
+
+    rounds: list[dict[str, Any]] | None = None
+    split_rules: list[dict[str, Any]] | None = None
+    exceptions: list[dict[str, Any]] | None = None
+    contributions: list[dict[str, Any]] | None = None
+    tone: str | None = None
+    relationship: str | None = None
+    reminder_handling: str | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_present_fields(self, handler):
+        # 생략된 선택 필드를 null로 추가하지 않는다.
+        # 중첩 레코드에 명시된 null은 보존한다.
+        return {
+            key: value
+            for key, value in handler(self).items()
+            if key in self.model_fields_set
+        }
 
 
-# 하위 호환 별칭 유지
 SettlementRequestContext = RequestContext
 
 
-# ==========================================
-# 2. 프롬프트 및 스키마 로더
-# ==========================================
-def load_contract(
-    prompt_path: Path = PROMPT_PATH,
-    schema_path: Path = SCHEMA_PATH,
-) -> tuple[str, dict[str, Any], int]:
-    """parse_query.md의 전송 마커 구간과 request_context.schema.json을 읽는다."""
-    raw_md = prompt_path.read_text(encoding="utf-8")
-
-    version_match = re.search(r"^\|\s*prompt_version\s*\|\s*(\d+)\s*\|", raw_md, re.MULTILINE)
-    if not version_match:
-        raise ValueError("프롬프트 문서에서 '| prompt_version | N |' 표를 찾을 수 없습니다.")
-    prompt_version = int(version_match.group(1))
-
-    start_marker = "<!-- prompt:start -->"
-    end_marker = "<!-- prompt:end -->"
-    if start_marker not in raw_md or end_marker not in raw_md:
-        raise ValueError("프롬프트 문서에서 <!-- prompt:start --> 또는 <!-- prompt:end --> 마커를 찾을 수 없습니다.")
-
-    system_prompt = raw_md.split(start_marker, 1)[1].split(end_marker, 1)[0].strip()
-    system_prompt = system_prompt.replace("{output_schema}", SHORT_SCHEMA_GUIDE)
-
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    return system_prompt, schema, prompt_version
+class ReviewIssue(BaseModel):
+    code: str
+    path: str
+    question: str
 
 
-def parse_settlement_query(text: str, model: str = "gemini-2.5-flash") -> RequestContext:
-    system_prompt, schema, _ = load_contract()
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+class ParseResult(BaseModel):
+    context: RequestContext
+    issues: list[ReviewIssue]
+    status: Literal["needs_clarification", "needs_confirmation"]
+    source_text: str = Field(repr=False)
+    supplied_evidence: str | None = Field(default=None, repr=False)
+    prompt_version: int
+    schema_sha256: str
+    model: str
+    attempts: int
 
-    response = client.models.generate_content(
-        model=model,
-        contents=text,
-        config={
-            "system_instruction": system_prompt,
-            "response_mime_type": "application/json",
-            "response_json_schema": schema,
-            "temperature": 0.0,
-        },
+
+@lru_cache(maxsize=1)
+def _schema():
+    schema = json.loads(
+        DEFAULT_SCHEMA_PATH.read_text(encoding="utf-8")
     )
-    raw_data = json.loads(response.text)
-    return RequestContext.model_validate(raw_data)
+    Draft7Validator.check_schema(schema)
+
+    if set(schema.get("properties", {})) != CONTEXT_FIELDS:
+        raise ParserConfigurationError(
+            "9필드 RequestContext 스키마가 필요합니다."
+        )
+
+    return schema
+
+
+def validate_context_data(data, *, schema=None):
+    active = _schema() if schema is None else schema
+    errors = list(ContextValidator(active).iter_errors(data))
+
+    if errors:
+        # 원문 값 대신 위치와 위반 규칙만 오류에 포함한다.
+        details = [
+            {
+                "path": list(error.absolute_path),
+                "rule": error.validator,
+            }
+            for error in errors[:8]
+        ]
+        raise OutputFormatError(
+            json.dumps(details, ensure_ascii=False)
+        )
+
+    return RequestContext.model_validate(data)
+
+
+@lru_cache(maxsize=1)
+def load_contract():
+    document = DEFAULT_PROMPT_PATH.read_text(encoding="utf-8")
+
+    starts = list(re.finditer(
+        r"(?m)^<!-- prompt:start -->[ \t]*$",
+        document,
+    ))
+    ends = list(re.finditer(
+        r"(?m)^<!-- prompt:end -->[ \t]*$",
+        document,
+    ))
+
+    if (
+        len(starts) != 1
+        or len(ends) != 1
+        or starts[0].end() >= ends[0].start()
+    ):
+        raise ParserConfigurationError(
+            "독립된 줄의 전송 마커 한 쌍이 필요합니다."
+        )
+
+    version = re.search(
+        r"(?m)^\|\s*prompt_version\s*\|\s*(\d+)\s*\|",
+        document[:starts[0].start()],
+    )
+    prompt = document[
+        starts[0].end():ends[0].start()
+    ].strip()
+
+    if not version or prompt.count("{output_schema}") != 1:
+        raise ParserConfigurationError(
+            "prompt_version과 스키마 자리 한 개가 필요합니다."
+        )
+
+    prompt = prompt.replace(
+        "{output_schema}",
+        "response_json_schema의 RequestContext 계약을 따르세요.",
+    )
+
+    schema = _schema()
+    digest = sha256(
+        json.dumps(
+            schema,
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+
+    return prompt, schema, int(version.group(1)), digest
+
+
+@lru_cache(maxsize=1)
+def _client():
+    # 검토 함수만 사용할 때 Gemini SDK나 API 키가 필요하지 않다.
+    from dotenv import load_dotenv
+    from google import genai
+
+    load_dotenv(override=False)
+
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not key:
+        raise ParserConfigurationError(
+            "GEMINI_API_KEY를 설정해 주세요."
+        )
+
+    return genai.Client(api_key=key)
+
+
+def _generation_schema(schema):
+    """정본 스키마의 API용 사본을 만든다.
+
+    현재 프로젝트의 내부 definitions 참조를 펼친다.
+    원본 파일은 수정하지 않고 사후 검증에 사용한다.
+    """
+    def expand(node):
+        if "$ref" in node:
+            name = node["$ref"].split("/")[-1]
+            return expand(schema["definitions"][name])
+
+        result = {
+            key: value
+            for key, value in node.items()
+            if key not in {
+                "$schema",
+                "$comment",
+                "definitions",
+                "minLength",
+            }
+        }
+
+        if "properties" in result:
+            result["properties"] = {
+                key: expand(value)
+                for key, value in result["properties"].items()
+            }
+
+        if "items" in result:
+            result["items"] = expand(result["items"])
+
+        if None in result.get("enum", []):
+            return {
+                "anyOf": [
+                    {
+                        "type": "string",
+                        "enum": [
+                            value
+                            for value in result["enum"]
+                            if value is not None
+                        ],
+                    },
+                    {"type": "null"},
+                ],
+                "description": result.get("description", ""),
+            }
+
+        return result
+
+    return expand(schema)
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise OutputFormatError("JSON 중복 키")
+        result[key] = value
+    return result
+
+
+def _reject_number(value):
+    raise OutputFormatError(
+        "정수 이외의 숫자는 허용하지 않습니다."
+    )
+
+
+def parse_and_review(
+    text,
+    *,
+    supplied_evidence=None,
+    model=None,
+    client=None,
+):
+    if (
+        not isinstance(text, str)
+        or not text.strip()
+        or len(text) > 12000
+    ):
+        raise ValueError(
+            "발화는 공백이 아닌 1~12000자 문자열이어야 합니다."
+        )
+
+    if supplied_evidence is not None and (
+        not isinstance(supplied_evidence, str)
+        or len(supplied_evidence) > 24000
+    ):
+        raise ValueError(
+            "근거는 24000자 이하 문자열이어야 합니다."
+        )
+
+    prompt, schema, version, digest = load_contract()
+
+    if client is None:
+        client = _client()
+
+    selected = model or os.getenv("GEMINI_MODEL", "").strip()
+    if not selected:
+        raise ParserConfigurationError(
+            "GEMINI_MODEL을 설정해 주세요."
+        )
+
+    contents = json.dumps(
+        {
+            "user_text": text,
+            "supplied_evidence": supplied_evidence,
+        },
+        ensure_ascii=False,
+    )
+
+    feedback = ""
+
+    for attempt in (1, 2):
+        try:
+            response = client.models.generate_content(
+                model=selected,
+                contents=contents,
+                config={
+                    "system_instruction": prompt + feedback,
+                    "response_mime_type": "application/json",
+                    "response_json_schema": _generation_schema(schema),
+                    "temperature": 0,
+                },
+            )
+        except Exception as exc:
+            # API 오류를 형식 오류처럼 반복 호출하지 않는다.
+            raise ParserAPIError(
+                "모델 호출에 실패했습니다."
+            ) from exc
+
+        candidates = getattr(response, "candidates", None) or []
+        finish = (
+            getattr(candidates[0], "finish_reason", None)
+            if candidates
+            else None
+        )
+        finish = getattr(finish, "name", finish)
+
+        if finish == "MAX_TOKENS":
+            feedback = (
+                "\n이전 응답이 잘렸습니다. "
+                "설명 없이 완전한 JSON 객체만 반환하세요."
+            )
+            continue
+
+        if finish != "STOP":
+            raise ParserAPIError(
+                "모델이 정상 완료 응답을 반환하지 않았습니다."
+            )
+
+        try:
+            data = json.loads(
+                response.text or "",
+                object_pairs_hook=_unique_object,
+                parse_float=_reject_number,
+                parse_constant=_reject_number,
+            )
+            context = validate_context_data(
+                data,
+                schema=schema,
+            )
+        except (json.JSONDecodeError, OutputFormatError):
+            feedback = (
+                "\n이전 응답이 JSON 또는 스키마 검사에 실패했습니다. "
+                "같은 원문의 조건만 사용해 형식을 바로잡으세요."
+            )
+            continue
+
+        issues = review_context(context, schema=schema)
+
+        return ParseResult(
+            context=context,
+            issues=issues,
+            status=(
+                "needs_clarification"
+                if issues
+                else "needs_confirmation"
+            ),
+            source_text=text,
+            supplied_evidence=supplied_evidence,
+            prompt_version=version,
+            schema_sha256=digest,
+            model=selected,
+            attempts=attempt,
+        )
+
+    raise ManualInputRequired(
+        "응답 형식이 두 번 실패했습니다. 수동 입력으로 전환해 주세요."
+    )
+
+
+async def parse_settlement_query_async(text, **kwargs):
+    return await asyncio.to_thread(
+        parse_and_review,
+        text,
+        **kwargs,
+    )
+
+
+def parse_settlement_query(text, **kwargs):
+    return parse_and_review(text, **kwargs).context
 
 
 parse_settlement_request = parse_settlement_query
 
 
-# ==========================================
-# 3. 의미 검증 및 확인 항목 도출 (review_context)
-# ==========================================
-def _to_dict(context: RequestContext | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(context, BaseModel):
-        return context.model_dump(exclude_none=False)
-    return dict(context)
+def review_context(
+    context: RequestContext | dict[str, Any],
+    *,
+    schema: dict[str, Any] | None = None,
+) -> list[ReviewIssue]:
+    """입력의 누락·참조·합계·충돌을 검사한다.
 
-
-def review_context(context: RequestContext | dict[str, Any]) -> list[str]:
+    빈 목록은 사용자 확인 완료를 뜻하지 않는다.
+    원문 누락, 실제 신원, 찬조 전달 여부는 별도 확인이 필요하다.
     """
-    RequestContext의 의미 검증을 수행하고 사용자 확인이 필요한 항목 목록을 반환한다.
-    계산 결과나 송금 요청은 생성하지 않는다.
-    """
-    data = _to_dict(context)
-    issues: list[str] = []
+    data = (
+        context.model_dump()
+        if isinstance(context, RequestContext)
+        else context
+    )
+    validate_context_data(data, schema=schema)
 
-    participants = data.get("participants") or []
-    expenses = data.get("expenses") or []
-    split_rules = data.get("split_rules") or []
-    exceptions = data.get("exceptions") or []
-    contributions = data.get("contributions") or []
+    issues: list[ReviewIssue] = []
 
-    if not participants:
-        issues.append("참여자 명단(participants)이 비어 있습니다.")
+    def add(code, path, question):
+        issues.append(ReviewIssue(
+            code=code,
+            path=path,
+            question=question,
+        ))
+
+    names = Counter(data["participants"])
+    expenses = data["expenses"]
+
+    if not names:
+        add(
+            "missing_participants",
+            "participants",
+            "이 정산에 관련된 사람들의 이름을 알려 주세요.",
+        )
+    if any(count > 1 for count in names.values()):
+        add(
+            "ambiguous_person",
+            "participants",
+            "중복된 이름이 같은 사람인지 동명이인인지 확인해 주세요.",
+        )
+    if any(not name.strip() for name in names):
+        add(
+            "blank_person",
+            "participants",
+            "공백으로 된 참여자 이름을 확인해 주세요.",
+        )
     if not expenses:
-        issues.append("결제 내역(expenses)이 비어 있습니다.")
+        add(
+            "missing_expenses",
+            "expenses",
+            "각 결제의 결제자·총액·비용 항목을 알려 주세요.",
+        )
 
-    # 찬조금 검증 및 항목별 찬조 적용액 집계
-    item_contributions: dict[tuple[int, int], int] = {}
-    for c_idx, contrib in enumerate(contributions):
-        exp_idx = contrib.get("expense_index")
-        amount = contrib.get("amount")
-        uses = contrib.get("uses") or []
+    def person(name, path):
+        if not name or not name.strip() or names[name] != 1:
+            add(
+                "unresolved_person",
+                path,
+                "이 기록의 사람을 참여자 목록에서 명확하게 확인해 주세요.",
+            )
 
-        if exp_idx is None or not (0 <= exp_idx < len(expenses)):
-            issues.append(f"찬조금[{c_idx}]의 대상 결제(expense_index)가 미정이거나 범위를 벗어났습니다.")
-        if amount is None:
-            issues.append(f"찬조금[{c_idx}]의 총액(amount)이 미정입니다.")
-        if not contrib.get("funding_note"):
-            issues.append(f"찬조금[{c_idx}]의 전달·충당 방식(funding_note) 확인이 필요합니다.")
-        if not uses:
-            issues.append(f"찬조금[{c_idx}]을 어느 항목에 얼마 적용할지(uses) 확인이 필요합니다.")
-        else:
-            use_sum = 0
-            for u_idx, use in enumerate(uses):
-                u_item_idx = use.get("item_index")
-                u_amount = use.get("amount")
-                if u_item_idx is None or u_amount is None:
-                    issues.append(f"찬조금[{c_idx}]의 적용 내역[{u_idx}]에 미정 값이 있습니다.")
-                else:
-                    use_sum += u_amount
-                    if exp_idx is not None:
-                        key = (exp_idx, u_item_idx)
-                        item_contributions[key] = item_contributions.get(key, 0) + u_amount
-            if amount is not None and use_sum != amount:
-                issues.append(f"찬조금[{c_idx}] 총액({amount})과 항목별 적용 합계({use_sum})가 일치하지 않습니다.")
+    def target(record, path, item=True):
+        ei = record.get("expense_index")
+        if ei is None or not 0 <= ei < len(expenses):
+            add(
+                "unresolved_expense",
+                path + ".expense_index",
+                "이 조건이 어느 결제에 적용되는지 확인해 주세요.",
+            )
+            return None
 
-    # 결제 및 항목 합계 검사
-    for e_idx, exp in enumerate(expenses):
-        total_amount = exp.get("total_amount")
-        payer_name = exp.get("payer_name")
-        items = exp.get("items") or []
+        if not item:
+            return ei
 
-        if total_amount is None:
-            issues.append(f"결제[{e_idx}]의 총액(total_amount)이 미정입니다.")
-        if not payer_name:
-            issues.append(f"결제[{e_idx}]의 결제자(payer_name)가 미정입니다.")
+        ii = record.get("item_index")
+        if (
+            ii is None
+            or not 0 <= ii < len(expenses[ei].get("items", []))
+        ):
+            add(
+                "unresolved_item",
+                path + ".item_index",
+                "이 조건이 해당 결제의 어느 항목에 적용되는지 확인해 주세요.",
+            )
+            return None
+
+        return ei, ii
+
+    rounds = data.get("rounds", [])
+    round_numbers = Counter(
+        record["round_number"]
+        for record in rounds
+        if record["round_number"] is not None
+    )
+
+    for i, record in enumerate(rounds):
+        path = f"rounds[{i}]"
+
+        if (
+            record["round_number"] is None
+            or round_numbers[record["round_number"]] != 1
+        ):
+            add(
+                "unresolved_round",
+                path,
+                "차수 번호와 중복 기록을 확인해 주세요.",
+            )
+
+        attendees = record.get("participant_names", [])
+        for j, name in enumerate(attendees):
+            person(name, f"{path}.participant_names[{j}]")
+
+        if len(attendees) != len(set(attendees)):
+            add(
+                "duplicate_attendee",
+                path,
+                "같은 이름이 중복된 차수 참석 명단을 확인해 주세요.",
+            )
+
+        if (
+            record.get("participant_count") is not None
+            and len(set(attendees)) != record["participant_count"]
+        ):
+            add(
+                "incomplete_attendees",
+                path,
+                "말한 참석 인원과 명단이 다릅니다. 전체 참석 명단을 확인해 주세요.",
+            )
+
+        for j, attendance in enumerate(record.get("attendance", [])):
+            person(
+                attendance["participant_name"],
+                f"{path}.attendance[{j}].participant_name",
+            )
+
+    item_keys = set()
+
+    for ei, expense in enumerate(expenses):
+        path = f"expenses[{ei}]"
+
+        person(expense["payer_name"], path + ".payer_name")
+
+        if expense["total_amount"] is None:
+            add(
+                "missing_total",
+                path + ".total_amount",
+                "이 한 번의 결제 총액을 확인해 주세요.",
+            )
+
+        if (
+            "round_number" in expense
+            and round_numbers[expense["round_number"]] != 1
+        ):
+            add(
+                "unresolved_round",
+                path + ".round_number",
+                "이 결제와 연결할 차수를 확인해 주세요.",
+            )
+
+        items = expense.get("items", [])
+
         if not items:
-            issues.append(f"결제[{e_idx}]의 세부 항목(items)이 없습니다.")
-        else:
-            item_sum = 0
-            for i_idx, item in enumerate(items):
-                if item.get("name") is None or item.get("amount") is None:
-                    issues.append(f"결제[{e_idx}] 항목[{i_idx}]의 이름 또는 금액이 미정입니다.")
-                else:
-                    item_sum += item["amount"]
-            if total_amount is not None and all(i.get("amount") is not None for i in items):
-                if item_sum != total_amount:
-                    issues.append(f"결제[{e_idx}] 총액({total_amount})과 항목 금액 합계({item_sum})가 불일치합니다.")
+            add(
+                "missing_items",
+                path + ".items",
+                "누구에게 어떤 기준으로 나눌지 구분할 비용 항목을 확인해 주세요.",
+            )
 
-    # 예외(exceptions) 검증 및 인덱싱
-    item_exceptions: dict[tuple[int, int], list[dict[str, Any]]] = {}
-    for ex_idx, ex in enumerate(exceptions):
-        exp_idx = ex.get("expense_index")
-        item_idx = ex.get("item_index")
-        kind = ex.get("kind")
-        p_name = ex.get("participant_name")
+        for ii, item in enumerate(items):
+            item_keys.add((ei, ii))
 
-        if exp_idx is None or item_idx is None:
-            issues.append(f"예외[{ex_idx}]의 대상 결제/항목 인덱스가 미정입니다.")
-            continue
-        if not (0 <= exp_idx < len(expenses)):
-            issues.append(f"예외[{ex_idx}]의 expense_index({exp_idx})가 범위를 벗어났습니다.")
-            continue
-        exp_items = expenses[exp_idx].get("items") or []
-        if not (0 <= item_idx < len(exp_items)):
-            issues.append(f"예외[{ex_idx}]의 item_index({item_idx})가 범위를 벗어났습니다.")
-            continue
-        if not p_name or kind is None:
-            issues.append(f"예외[{ex_idx}]의 대상자 또는 조정 방식(kind)이 미정입니다.")
-            continue
-        if kind == "fixed_amount" and ex.get("fixed_amount") is None:
-            issues.append(f"예외[{ex_idx}]의 합의 소비 몫(fixed_amount)이 미정입니다.")
-        if kind == "covered_by_other" and not ex.get("covered_by_name"):
-            issues.append(f"예외[{ex_idx}]의 대신 부담자(covered_by_name)가 미정입니다.")
+            if (
+                item["name"] is None
+                or not item["name"].strip()
+                or item["amount"] is None
+            ):
+                add(
+                    "missing_item_data",
+                    f"{path}.items[{ii}]",
+                    "이 항목의 이름과 전체 금액을 확인해 주세요.",
+                )
 
-        item_exceptions.setdefault((exp_idx, item_idx), []).append(ex)
+        if (
+            items
+            and all(item["amount"] is not None for item in items)
+            and expense["total_amount"] is not None
+        ):
+            if sum(item["amount"] for item in items) != expense["total_amount"]:
+                add(
+                    "item_sum_mismatch",
+                    path,
+                    "항목 합계와 결제 총액이 다릅니다. 원본을 확인해 주세요.",
+                )
 
-    # 분담 규칙(split_rules) 및 SPEC 5.4 순서에 따른 잔액 검사
-    for r_idx, rule in enumerate(split_rules):
-        exp_idx = rule.get("expense_index")
-        item_idx = rule.get("item_index")
-        method = rule.get("method")
-        rule_participants = rule.get("participant_names")
+        receipt = expense.get("receipt_total_amount")
+        if (
+            receipt is not None
+            and expense["total_amount"] is not None
+            and receipt != expense["total_amount"]
+        ):
+            add(
+                "receipt_mismatch",
+                path,
+                "영수증에서 읽은 총액과 입력한 결제 총액을 대조해 주세요.",
+            )
 
-        if exp_idx is None or item_idx is None:
-            issues.append(f"분담 규칙[{r_idx}]의 대상 결제/항목 인덱스가 미정입니다.")
-            continue
-        if not (0 <= exp_idx < len(expenses)):
-            issues.append(f"분담 규칙[{r_idx}]의 expense_index({exp_idx})가 범위를 벗어났습니다.")
-            continue
-        exp_items = expenses[exp_idx].get("items") or []
-        if not (0 <= item_idx < len(exp_items)):
-            issues.append(f"분담 규칙[{r_idx}]의 item_index({item_idx})가 범위를 벗어났습니다.")
-            continue
-        if method is None or not rule_participants:
-            issues.append(f"분담 규칙[{r_idx}]의 방식(method) 또는 기본 부담 대상자(participant_names)가 미정입니다.")
-            continue
+    rules = defaultdict(list)
 
-        item_amount = exp_items[item_idx].get("amount")
-        if item_amount is None:
-            continue
+    for i, rule in enumerate(data.get("split_rules", [])):
+        path = f"split_rules[{i}]"
+        key = target(rule, path)
 
-        net_item_amount = item_amount - item_contributions.get((exp_idx, item_idx), 0)
-        ex_list = item_exceptions.get((exp_idx, item_idx), [])
+        if key is not None:
+            rules[key].append(rule)
 
-        if method == "equal":
-            excluded = {
-                ex["participant_name"]
-                for ex in ex_list
-                if ex.get("kind") == "exclude" and ex.get("participant_name")
-            }
-            fixed_map = {
-                ex["participant_name"]: ex["fixed_amount"]
-                for ex in ex_list
-                if ex.get("kind") == "fixed_amount"
-                and ex.get("participant_name")
-                and ex.get("fixed_amount") is not None
-            }
-            covers = {
-                ex["participant_name"]: ex["covered_by_name"]
-                for ex in ex_list
-                if ex.get("kind") == "covered_by_other"
-                and ex.get("participant_name")
-                and ex.get("covered_by_name")
-            }
+        members = rule["participant_names"]
 
-            remaining_people = [
-                p for p in rule_participants if p not in excluded and p not in fixed_map
-            ]
-            remainder_amount = net_item_amount - sum(fixed_map.values())
+        if not members or rule["method"] is None:
+            add(
+                "incomplete_rule",
+                path,
+                "이 항목의 분담 방식과 전체 기본 부담 대상자를 확인해 주세요.",
+            )
 
-            if remainder_amount < 0:
-                issues.append(f"분담 규칙[{r_idx}]의 고정 부담액 합계가 배분할 항목 금액을 초과합니다.")
-                continue
-            if remainder_amount > 0 and not remaining_people:
-                issues.append(f"분담 규칙[{r_idx}]에서 남은 금액({remainder_amount})을 균등 분담할 인원이 없습니다.")
-                continue
+        for j, name in enumerate(members or []):
+            person(name, f"{path}.participant_names[{j}]")
 
-            # 1. Fraction으로 개인별 정확한 소비 몫 계산
-            exact_shares: dict[str, Fraction] = {p: Fraction(0) for p in rule_participants}
-            for p, f_amt in fixed_map.items():
-                exact_shares[p] = Fraction(f_amt, 1)
-            if remaining_people:
-                equal_share = Fraction(remainder_amount, len(remaining_people))
-                for p in remaining_people:
-                    exact_shares[p] = equal_share
+        if members and len(members) != len(set(members)):
+            add(
+                "duplicate_rule_member",
+                path,
+                "기본 부담 대상자 이름의 중복을 확인해 주세요.",
+            )
 
-            # 2. 대신 부담(covered_by_other)을 먼저 이전
-            for target_p, coverer_p in covers.items():
-                if target_p in exact_shares and coverer_p in exact_shares:
-                    exact_shares[coverer_p] += exact_shares[target_p]
-                    exact_shares[target_p] = Fraction(0)
+        if "remainder_payer_name" in rule:
+            person(
+                rule["remainder_payer_name"],
+                path + ".remainder_payer_name",
+            )
 
-            # 3. 최종 몫의 정수 부분 합산 후 원 단위 잔액 발생 여부 확인
-            int_sum = sum(int(share) for share in exact_shares.values())
-            rounding_remainder = net_item_amount - int_sum
-            remainder_payer = rule.get("remainder_payer_name")
+        amounts = rule.get("individual_amounts", [])
 
-            if rounding_remainder > 0:
-                if not remainder_payer:
-                    issues.append(
-                        f"분담 규칙[{r_idx}]에서 원 단위 잔액({rounding_remainder}원)이 발생하므로 "
-                        "잔액 부담자(remainder_payer_name) 지정이 필요합니다."
+        if rule["method"] == "explicit_amount":
+            counts = Counter(
+                row["participant_name"]
+                for row in amounts
+            )
+
+            if (
+                not amounts
+                or members is None
+                or set(counts) != set(members)
+                or any(value != 1 for value in counts.values())
+            ):
+                add(
+                    "incomplete_individual_amounts",
+                    path,
+                    "기본 부담 대상자마다 한 개의 소비 몫이 지정됐는지 확인해 주세요.",
+                )
+
+            for j, row in enumerate(amounts):
+                person(
+                    row["participant_name"],
+                    f"{path}.individual_amounts[{j}]",
+                )
+                if row["amount"] is None:
+                    add(
+                        "missing_individual_amount",
+                        path,
+                        "각 사람의 합의된 소비 몫을 확인해 주세요.",
                     )
-                else:
-                    # 지정한 잔액 부담자가 실제로 잔액을 부담할 수 있는 유효 대상인지 검사
-                    if remainder_payer not in rule_participants or remainder_payer in excluded:
-                        issues.append(
-                            f"분담 규칙[{r_idx}]의 잔액 부담자({remainder_payer})가 유효한 부담 대상자가 아닙니다."
-                        )
-                    elif remainder_payer in covers:
-                        issues.append(
-                            f"분담 규칙[{r_idx}]의 잔액 부담자({remainder_payer})는 본인 몫을 다른 사람에게 이전했으므로 잔액을 부담할 수 없습니다."
-                        )
-                    elif remainder_payer in fixed_map and remainder_payer not in covers.values():
-                        issues.append(
-                            f"분담 규칙[{r_idx}]의 잔액 부담자({remainder_payer})는 고정 금액 합의자이므로 잔액을 추가 배정할 수 없습니다."
-                        )
+        elif amounts:
+            add(
+                "conflicting_rule",
+                path,
+                "개인별 지정 금액과 분담 방식의 관계를 확인해 주세요.",
+            )
+
+    for key in sorted(item_keys):
+        if len(rules[key]) != 1:
+            add(
+                "rule_count",
+                f"expenses[{key[0]}].items[{key[1]}]",
+                "이 항목에 적용할 유효 분담 기준 하나를 확인해 주세요.",
+            )
+
+    adjustments = defaultdict(list)
+    covers = defaultdict(list)
+
+    for i, exception in enumerate(data.get("exceptions", [])):
+        path = f"exceptions[{i}]"
+        key = target(exception, path)
+
+        person(
+            exception["participant_name"],
+            path + ".participant_name",
+        )
+
+        if key is not None:
+            adjustments[(key, exception["participant_name"])].append(
+                exception
+            )
+
+            if (
+                len(rules[key]) == 1
+                and rules[key][0]["participant_names"] is not None
+                and exception["participant_name"]
+                not in rules[key][0]["participant_names"]
+            ):
+                add(
+                    "exception_outside_rule",
+                    path,
+                    "부담 조정 대상이 해당 항목의 기본 부담 대상자인지 확인해 주세요.",
+                )
+
+        kind = exception["kind"]
+
+        if kind is None:
+            add(
+                "unconfirmed_adjustment",
+                path,
+                "조정 이유를 보고 부담 제외·합의 소비 몫·대신 부담 중 "
+                "적용할 조건을 확인해 주세요.",
+            )
+
+        if kind == "fixed_amount" and exception.get("fixed_amount") is None:
+            add(
+                "missing_fixed_amount",
+                path,
+                "이 항목에서 그 사람이 부담하기로 합의한 소비 몫 전체를 확인해 주세요.",
+            )
+
+        if kind != "fixed_amount" and exception.get("fixed_amount") is not None:
+            add(
+                "conflicting_adjustment",
+                path,
+                "합의 소비 몫과 부담 조정 방식이 서로 맞는지 확인해 주세요.",
+            )
+
+        if kind == "covered_by_other":
+            payer = exception.get("covered_by_name")
+            person(payer, path + ".covered_by_name")
+
+            if payer == exception["participant_name"]:
+                add(
+                    "self_cover",
+                    path,
+                    "원래 부담자와 대신 부담하는 사람이 서로 다른지 확인해 주세요.",
+                )
+
+            if key is not None and payer is not None:
+                covers[key].append((
+                    exception["participant_name"],
+                    payer,
+                ))
+
+        elif exception.get("covered_by_name") is not None:
+            add(
+                "conflicting_adjustment",
+                path,
+                "대신 부담하는 사람과 조정 방식이 서로 맞는지 확인해 주세요.",
+            )
+
+    for (key, _), records in adjustments.items():
+        if len(records) > 1:
+            add(
+                "duplicate_adjustment",
+                f"expenses[{key[0]}].items[{key[1]}]",
+                "같은 사람·항목의 여러 부담 조정을 하나의 합의로 확인해 주세요.",
+            )
+
+    for key, edges in covers.items():
+        if {a for a, _ in edges} & {b for _, b in edges}:
+            add(
+                "cover_chain_or_cycle",
+                f"expenses[{key[0]}].items[{key[1]}]",
+                "대신 부담의 연쇄·순환이 있습니다. 최종 부담자를 확인해 주세요.",
+            )
+
+    applied = defaultdict(int)
+
+    for i, contribution in enumerate(data.get("contributions", [])):
+        path = f"contributions[{i}]"
+        ei = target(contribution, path, item=False)
+
+        person(
+            contribution["contributor_name"],
+            path + ".contributor_name",
+        )
+
+        if contribution["amount"] is None:
+            add(
+                "missing_contribution_amount",
+                path,
+                "찬조금 총액을 확인해 주세요.",
+            )
+
+        if not contribution.get("funding_note", "").strip():
+            add(
+                "missing_funding_note",
+                path,
+                "찬조금이 결제자에게 어떻게 전달되거나 충당됐는지 확인해 주세요.",
+            )
+
+        uses = contribution.get("uses", [])
+
+        if not uses:
+            add(
+                "missing_contribution_uses",
+                path,
+                "찬조금을 어느 비용 항목에 얼마씩 적용할지 확인해 주세요.",
+            )
+
+        seen_items = set()
+
+        for j, use in enumerate(uses):
+            use_path = f"{path}.uses[{j}]"
+            key = target(
+                {
+                    "expense_index": ei,
+                    "item_index": use["item_index"],
+                },
+                use_path,
+            )
+
+            if key is not None:
+                if key in seen_items:
+                    add(
+                        "duplicate_contribution_use",
+                        use_path,
+                        "같은 찬조금의 같은 항목 적용 기록이 중복됐는지 확인해 주세요.",
+                    )
+
+                seen_items.add(key)
+
+                if use["amount"] is not None:
+                    applied[key] += use["amount"]
+
+            if use["amount"] is None:
+                add(
+                    "missing_contribution_use_amount",
+                    use_path,
+                    "이 항목에 적용할 찬조금 금액을 확인해 주세요.",
+                )
+
+        if (
+            uses
+            and contribution["amount"] is not None
+            and all(use["amount"] is not None for use in uses)
+        ):
+            if sum(use["amount"] for use in uses) != contribution["amount"]:
+                add(
+                    "contribution_sum_mismatch",
+                    path,
+                    "항목별 적용액 합계와 찬조금 총액을 확인해 주세요.",
+                )
+
+    for key, amount in applied.items():
+        item_amount = expenses[key[0]]["items"][key[1]]["amount"]
+
+        if item_amount is not None and amount > item_amount:
+            add(
+                "contribution_exceeds_item",
+                f"expenses[{key[0]}].items[{key[1]}]",
+                "항목 금액을 넘는 찬조 적용액을 확인해 주세요.",
+            )
+
+    # 미정·참조·충돌 문제가 있으면 먼저 보완받는다.
+    # 구조 검토가 통과한 뒤 정확한 몫과 잔액 조건을 검사한다.
+    from .allocation_math import AllocationInputError, item_shares
+
+    if not issues:
+        for key in sorted(item_keys):
+            ei, ii = key
+            related = [
+                exception
+                for exception in data.get("exceptions", [])
+                if (
+                    exception["expense_index"],
+                    exception["item_index"],
+                ) == key
+            ]
+
+            try:
+                item_shares(
+                    expenses[ei]["items"][ii]["amount"] - applied[key],
+                    rules[key][0],
+                    related,
+                )
+            except AllocationInputError as exc:
+                add(
+                    exc.code,
+                    f"expenses[{ei}].items[{ii}]",
+                    str(exc),
+                )
 
     return issues
