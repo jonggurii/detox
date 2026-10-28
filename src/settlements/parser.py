@@ -198,7 +198,10 @@ def _client():
     from dotenv import load_dotenv
     from google import genai
 
-    load_dotenv(override=False)
+    load_dotenv(
+    BASE_DIR.parent.parent / ".env",
+    override=False
+    )
 
     key = os.getenv("GEMINI_API_KEY", "").strip()
     if not key:
@@ -913,3 +916,39 @@ def review_context(
                 )
 
     return issues
+
+if __name__ == "__main__":
+    import time
+
+    print("복합 N빵 정산 파서 통합 테스트")
+    print("-" * 45)
+
+    user_text = input("정산 내용을 입력하세요: ")
+
+    start = time.perf_counter()
+
+    result = parse_and_review(user_text)
+
+    elapsed = time.perf_counter() - start
+
+    print("\n===== LLM 구조화 출력 =====")
+    print(
+        result.context.model_dump_json(indent=2)
+    )
+
+    print("\n===== 입력 검토 결과 =====")
+
+    if result.issues:
+        for issue in result.issues:
+            print(
+                f"[{issue.code}] "
+                f"{issue.path}: {issue.question}"
+            )
+    else:
+        print("추가 확인 항목 없음")
+
+    print(f"\n상태: {result.status}")
+    print(f"모델: {result.model}")
+    print(f"프롬프트 버전: {result.prompt_version}")
+    print(f"API 시도 횟수: {result.attempts}")
+    print(f"총 소요 시간: {elapsed:.2f}초")
