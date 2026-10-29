@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """추출, 로컬 스키마 검증, 입력 검토. 사용자 확인은 별도 단계다."""
 from collections import Counter, defaultdict
 from functools import lru_cache
@@ -414,7 +413,7 @@ async def parse_settlement_query_async(text, **kwargs):
 
 def parse_settlement_query(text, **kwargs):
     return parse_and_review(text, **kwargs).context
-=======
+
 
 import os
 import json
@@ -526,12 +525,11 @@ def parse_settlement_query(user_text: str) -> dict:
             print("형식 검증 실패, 1회 재시도합니다.")
 
     raise RuntimeError("파싱 실패")
->>>>>>> 80a5028 (Connect Gemini parser to settlement engine)
+
 
 
 parse_settlement_request = parse_settlement_query
 
-<<<<<<< HEAD
 
 def review_context(
     context: RequestContext | dict[str, Any],
@@ -1036,16 +1034,15 @@ if __name__ == "__main__":
     import time
 
     print("복합 N빵 정산 파서 통합 테스트")
-=======
 
 if __name__ == "__main__":
     print("복합 N빵 정산 자연어 파싱 테스트")
->>>>>>> 80a5028 (Connect Gemini parser to settlement engine)
+
     print("-" * 45)
 
     user_text = input("정산 내용을 입력하세요: ")
 
-<<<<<<< HEAD
+
     start = time.perf_counter()
 
     result = parse_and_review(user_text)
@@ -1073,7 +1070,7 @@ if __name__ == "__main__":
     print(f"프롬프트 버전: {result.prompt_version}")
     print(f"API 시도 횟수: {result.attempts}")
     print(f"총 소요 시간: {elapsed:.2f}초")
-=======
+
     result = parse_settlement_query(user_text)
 
     print("\n===== LLM 구조화 출력 결과 =====")
@@ -1084,4 +1081,4 @@ if __name__ == "__main__":
     ))
 
     print("\nJSON Schema 검증 통과")
->>>>>>> 80a5028 (Connect Gemini parser to settlement engine)
+
