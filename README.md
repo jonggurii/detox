@@ -43,11 +43,14 @@ detox/
 │   ├── SPEC.md                        # 제품 스펙 v1 (EARS AC 및 API 스키마)
 │   ├── ontology.yaml                  # 도메인 미니 온톨로지 정본
 │   ├── research/
-│   │   └── interviews.md              # 인터뷰 로그, 관찰 기록, Job Story
+│   │   └── interviews_union.md              # 인터뷰 로그, 관찰 기록, Job Story
 │   └── spikes/
 │       └── ocr_complex_parsing.md     # 기술 타당성 스파이크 기록
 └── src/
-    └── detox/
+    └── settlements/
         ├── parser.py                  # Gemini 파서 & Pydantic 스키마 & 정밀 계산 엔진
+        ├── __init__.py                #
+        ├── allocation_math.py         #
+        ├── workflow.py                # 
         └── prompts/
             └── parse_query.md         # 파싱 전용 시스템 프롬프트
