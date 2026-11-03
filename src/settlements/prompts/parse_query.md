@@ -64,6 +64,40 @@
 - covered_by_other는 participant_name에 원래 부담자, covered_by_name에 대신 부담자를 넣는다. 먼저 결제했다는 사실만으로 대신 부담을 만들지 않는다.
 - 서로 충돌하는 조건, 여러 조정, 대신 부담의 순환·연쇄는 합쳐 계산하지 말고 각 조건을 보존한다. 적용 가능 여부는 후속 검토에서 결정한다.
 
+분담 규칙과 예외 조건의 일관성:
+- split_rules.participant_names는 예외를 적용하기 전의
+  기본 부담 대상자 전체를 나타낸다.
+- 사용자가 특정 참여자의 부담 제외를 명시한 경우,
+  해당 참여자를 기본 부담 대상자에 포함하고
+  exceptions.kind="exclude"로 제외를 표현한다.
+- 이때 해당 참여자를 split_rules.participant_names에서
+  미리 제거하지 않는다.
+- 기본 부담 대상자에서 제외한 사람에 대해
+  동일한 exclude 예외를 중복 생성하지 않는다.
+- 사용자가 처음부터 특정 참여자들만 부담한다고 명시하고
+  별도의 제외 조건을 말하지 않았다면,
+  명시된 참여자들만 participant_names에 기록한다.
+- 기본 부담 대상자 전체를 확인할 수 없다면
+  임의로 참석자 전체를 채우지 않고 null로 둔다.
+
+예시:
+입력:
+민수, 철수, 영희가 1차에 참석했어.
+식사비는 세 명이 나누고,
+영희는 술값에서 제외하기로 했어.
+술값은 민수와 철수가 나눠 내.
+
+올바른 출력:
+- 식사비 기본 부담 대상자: 민수, 철수, 영희
+- 술값 기본 부담 대상자: 민수, 철수, 영희
+- 술값 exceptions: 영희 exclude
+
+잘못된 출력:
+- 술값 기본 부담 대상자: 민수, 철수
+- 술값 exceptions: 영희 exclude
+
+이 잘못된 출력은 exception_outside_rule을 발생시킨다.
+
 찬조와 문구:
 - contributions에는 찬조자, 찬조금 총액, 대상 결제와 명시된 항목별 적용액만 담는다. 적용할 항목이나 금액이 없으면 uses를 생략하거나 알려진 항목의 amount를 null로 둔다. 식사·술의 배분 비율을 정하지 않는다.
 - 찬조금 전달·충당·약속에 대한 말은 funding_note에 보존한다. 찬조했다는 이유로 소비 부담 대상에서 자동 제외하지 않는다. 이미 받은 돈인지 모델이 확인하지 않는다.
@@ -108,32 +142,86 @@
   "participants": ["과장님", "팀장님"],
   "expenses": [],
   "exceptions": [{"expense_index": null, "item_index": null, "participant_name": "과장님", "kind": null, "reason": "과장님은 맥주 한 잔만 마셔서 금액 조율이 필요해"}],
-  "contributions": [{"expense_index": null, "contributor_name": "팀장님", "amount": 50000, "funding_note": "5만 원 찬조하기로 했는데 아직 전달은 안 됐어. 어느 결제에서 뺄지는 정하지 않았어"}]
+  "contributions": [{"expense_index": null, "co`ntributor_name": "팀장님", "amount": 50000, "funding_note": "5만 원 찬조하기로 했는데 아직 전달은 안 됐어. 어느 결제에서 뺄지는 정하지 않았어"}]
+}
+```
+
+예시 4 — 복합 정산과 명시적 부담 제외
+
+입력:
+1차는 민수, 철수, 영희가 참석했어.
+식사비 6만원과 술값 2만4천원은 민수가 결제했고,
+영희는 술값에서 제외해.
+2차 노래방 3만원은 철수가 결제했고
+민수와 철수만 참석했어.
+
+출력:
+```json
+{
+  "participants": ["민수", "철수", "영희"],
+  "rounds": [
+    {
+      "round_number": 1,
+      "participant_names": ["민수", "철수", "영희"]
+    },
+    {
+      "round_number": 2,
+      "participant_names": ["민수", "철수"]
+    }
+  ],
+  "expenses": [
+    {
+      "total_amount": 84000,
+      "payer_name": "민수",
+      "round_number": 1,
+      "items": [
+        {"name": "식사비", "amount": 60000},
+        {"name": "술값", "amount": 24000}
+      ]
+    },
+    {
+      "total_amount": 30000,
+      "payer_name": "철수",
+      "round_number": 2,
+      "items": [
+        {"name": "노래방 비용", "amount": 30000}
+      ]
+    }
+  ],
+  "split_rules": [
+    {
+      "expense_index": 0,
+      "item_index": 0,
+      "method": "equal",
+      "participant_names": ["민수", "철수", "영희"]
+    },
+    {
+      "expense_index": 0,
+      "item_index": 1,
+      "method": "equal",
+      "participant_names": ["민수", "철수", "영희"]
+    },
+    {
+      "expense_index": 1,
+      "item_index": 0,
+      "method": "equal",
+      "participant_names": ["민수", "철수"]
+    }
+  ],
+  "exceptions": [
+    {
+      "expense_index": 0,
+      "item_index": 1,
+      "participant_name": "영희",
+      "kind": "exclude",
+      "reason": "영희는 술값에서 제외"
+    }
+  ]
 }
 ```
 
 예시의 코드 펜스는 문서에서 JSON을 구분하기 위한 표시다. 실제 응답에는 코드 펜스를 붙이지 않는다.
 <!-- prompt:end -->
-
-### 분담 규칙과 예외 조건의 일관성
-
-- split_rules.participant_names는 해당 항목의 기본 부담 대상자를 나타낸다.
-- exceptions는 기본 부담 대상자의 부담을 조정할 때 사용한다.
-- 특정 참여자를 exceptions에서 제외 처리하려면,
-  해당 참여자가 split_rules.participant_names에도 포함되어 있어야 한다.
-- 이미 split_rules.participant_names에서 제외된 사람에게
-  동일한 제외 예외를 중복 생성하지 않는다.
-
-예시:
-민수, 철수, 영희가 참석했고 영희는 술을 마시지 않았다.
-
-방법 1:
-- 술값 기본 부담 대상자: 민수, 철수, 영희
-- 영희에 대한 부담 제외 예외 생성
-
-방법 2:
-- 술값 기본 부담 대상자: 민수, 철수
-- 영희에 대한 부담 제외 예외를 생성하지 않음
 
 ## 온톨로지 → 입력 필드 → 함수 인자
 
