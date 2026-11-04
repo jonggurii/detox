@@ -1,3 +1,4 @@
+"""추출, 로컬 스키마 검증, 입력 검토. 사용자 확인은 별도 단계다."""
 from collections import Counter, defaultdict
 from functools import lru_cache
 from hashlib import sha256
@@ -208,7 +209,10 @@ def _client():
             "GEMINI_API_KEY를 설정해 주세요."
         )
 
-    return genai.Client(api_key=key)
+    return genai.Client(
+        api_key=key,
+        http_options={"timeout": 60000, "retry_options": {"attempts": 1}},
+    )
 
 
 def _generation_schema(schema):
@@ -413,7 +417,10 @@ async def parse_settlement_query_async(text, **kwargs):
 def parse_settlement_query(text, **kwargs):
     return parse_and_review(text, **kwargs).context
 
+
+
 parse_settlement_request = parse_settlement_query
+
 
 def review_context(
     context: RequestContext | dict[str, Any],
@@ -914,39 +921,21 @@ def review_context(
 
     return issues
 
-if __name__ == "__main__":
+
+def main():
     import time
+    text = input("정산 내용을 입력하세요: ").strip()
+    started = time.perf_counter()
+    try:
+        result = parse_and_review(text)
+    except (ParserError, ValueError, OSError) as exc:
+        print(f"처리 실패: {exc}")
+        return 1
+    print(result.model_dump_json(indent=2))
+    print(f"총 소요 시간: {time.perf_counter() - started:.2f}초")
+    print("스키마·자동 검토 결과이며, 원문 대조와 사용자 확인이 필요합니다.")
+    return 0
 
-    print("복합 N빵 정산 파서 통합 테스트")
 
-    print("-" * 45)
-
-    user_text = input("정산 내용을 입력하세요: ")
-
-    start = time.perf_counter()
-
-    result = parse_and_review(user_text)
-
-    elapsed = time.perf_counter() - start
-
-    print("\n===== LLM 구조화 출력 =====")
-    print(
-        result.context.model_dump_json(indent=2)
-    )
-
-    print("\n===== 입력 검토 결과 =====")
-
-    if result.issues:
-        for issue in result.issues:
-            print(
-                f"[{issue.code}] "
-                f"{issue.path}: {issue.question}"
-            )
-    else:
-        print("추가 확인 항목 없음")
-
-    print(f"\n상태: {result.status}")
-    print(f"모델: {result.model}")
-    print(f"프롬프트 버전: {result.prompt_version}")
-    print(f"API 시도 횟수: {result.attempts}")
-    print(f"총 소요 시간: {elapsed:.2f}초")
+if __name__ == "__main__":
+    raise SystemExit(main())
