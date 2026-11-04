@@ -1,111 +1,194 @@
-"""임시 웹 MVP: 메모리 세션. 영속화/인증/배포는 추후 구현."""
+"""로컬 정산 웹앱. 실행: python -m uvicorn app:app --reload"""
 from pathlib import Path
-from threading import RLock
-from uuid import uuid4
+from types import SimpleNamespace
+from contextlib import closing
 import json
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
-from settlements.parser import parse_and_review, validate_context_data, review_context, ParserError
-from settlements.calculator import calculate_settlement, CalculationError
-from settlements.workflow import serialize_calculation
+import os
+import sqlite3
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+from settlements.parser import (
+    ManualInputRequired, OutputFormatError, ParserError, ParseResult,
+    ParserAPIError, ParserConfigurationError,
+    load_contract, parse_and_review, validate_context_data,
+)
+from settlements.workflow_store import WorkflowError, WorkflowStore
+from settlements.calculator import CalculationError
+from settlements.receipt_api import receipt_router
 
 ROOT = Path(__file__).resolve().parent
-app = FastAPI(title="복합 N빵 정산 MVP")
-_sessions = {}
-_lock = RLock()
 
-class ParseBody(BaseModel):
+
+class Body(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ParseBody(Body):
     text: str = Field(min_length=1, max_length=12000)
+    supplied_evidence: str | None = Field(default=None, max_length=24000)
 
-class EditBody(BaseModel):
-    revision: int
+
+class ManualBody(Body):
+    source_text: str = Field(min_length=1, max_length=12000)
     context: dict
 
-class ConfirmBody(BaseModel):
-    revision: int
+
+class EditBody(Body):
+    input_revision: int = Field(ge=1, strict=True)
+    context: dict
+
+
+class Checks(Body):
+    source_reviewed: StrictBool
+    people_resolved: StrictBool
+    conditions_reviewed: StrictBool
+    funding_verified: StrictBool = False
+
+
+class ConfirmBody(Body):
+    input_revision: int = Field(ge=1, strict=True)
     reviewed_by: str = Field(min_length=1, max_length=100)
+    review_notes: str = Field(min_length=1, max_length=2000)
+    checks: Checks
 
 
-def _issues(context):
-    return [i.model_dump() for i in review_context(context)]
+class CalculateBody(Body):
+    confirmation_id: str = Field(min_length=1, max_length=100)
 
 
-def _get(sid):
-    session = _sessions.get(sid)
-    if session is None:
-        raise HTTPException(404, "정산 세션을 찾을 수 없습니다.")
-    return session
+def create_app(db_path=None, parser=None, ocr=None):
+    app = FastAPI(title="모아정산", version="0.1.0")
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
+    store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
+    parse = parser or parse_and_review
 
+    @app.middleware("http")
+    async def same_origin(request: Request, call_next):
+        origin = request.headers.get("origin")
+        if request.method in {"POST", "PATCH", "DELETE"} and origin:
+            if origin.rstrip("/") != str(request.base_url).rstrip("/"):
+                return JSONResponse({"detail": "다른 주소에서 보낸 변경 요청입니다."}, status_code=403)
+        return await call_next(request)
 
-def _snapshot(sid, session):
-    return {"session_id": sid, "revision": session["revision"],
-            "context": session["context"], "issues": session["issues"],
-            "confirmed": session["confirmed"]}
+    @app.exception_handler(WorkflowError)
+    async def workflow_error(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=409)
 
-@app.get("/")
-def home():
-    return FileResponse(ROOT / "frontend" / "index.html")
+    @app.exception_handler(OutputFormatError)
+    async def format_error(request, exc):
+        return JSONResponse({"detail": "입력 형식을 확인해 주세요.", "issues": str(exc)}, status_code=422)
 
-@app.get("/frontend/style.css")
-def style():
-    return FileResponse(ROOT / "frontend" / "style.css", media_type="text/css")
+    @app.exception_handler(CalculationError)
+    async def calculation_error(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=422)
 
-@app.get("/frontend/app.js")
-def javascript():
-    return FileResponse(ROOT / "frontend" / "app.js", media_type="text/javascript")
+    @app.exception_handler(ManualInputRequired)
+    async def manual_required(request, exc):
+        return JSONResponse({"detail": "추출 형식을 확인하지 못했습니다. 직접 입력을 이용해 주세요."}, status_code=422)
 
-@app.post("/api/parse")
-def parse(body: ParseBody):
-    try:
-        parsed = parse_and_review(body.text)
-        context = parsed.context.model_dump(exclude_unset=True)
-        issues = [i.model_dump() for i in parsed.issues]
-    except (ParserError, ValueError) as exc:
-        raise HTTPException(422, str(exc)) from exc
-    sid = uuid4().hex
-    session = {"revision": 1, "context": context, "issues": issues,
-               "confirmed": False, "source_text": body.text}
-    with _lock:
-        _sessions[sid] = session
-    return _snapshot(sid, session)
+    @app.exception_handler(ParserError)
+    async def parser_error(request, exc):
+        return JSONResponse({"detail": "AI 호출을 완료하지 못했습니다. 서버의 모델·키 설정을 확인하거나 직접 입력해 주세요."}, status_code=503)
 
-@app.put("/api/sessions/{sid}/context")
-def edit(sid: str, body: EditBody):
-    with _lock:
-        session = _get(sid)
-        if session["revision"] != body.revision:
-            raise HTTPException(409, "입력 버전이 변경됐습니다. 새로고침 후 다시 시도하세요.")
+    def require_session(sid):
         try:
-            context = validate_context_data(body.context).model_dump(exclude_unset=True)
-            issues = _issues(context)
-        except (ParserError, ValueError) as exc:
-            raise HTTPException(422, str(exc)) from exc
-        session.update(revision=session["revision"]+1, context=context,
-                       issues=issues, confirmed=False)
-        return _snapshot(sid, session)
+            return store.view(sid)
+        except WorkflowError as exc:
+            raise HTTPException(404, "정산을 찾지 못했습니다.") from exc
 
-@app.post("/api/sessions/{sid}/confirm")
-def confirm(sid: str, body: ConfirmBody):
-    with _lock:
-        session = _get(sid)
-        if session["revision"] != body.revision:
-            raise HTTPException(409, "확인하려는 입력 버전이 변경됐습니다.")
-        session["issues"] = _issues(session["context"])
-        if session["issues"]:
-            raise HTTPException(409, "미해결 정산 조건이 있어 확정할 수 없습니다.")
-        session["confirmed"] = True
-        session["reviewed_by"] = body.reviewed_by
-        return _snapshot(sid, session)
+    def extract(body: ParseBody):
+        # parse_and_review는 context와 issues를 포함한 ParseResult를 반환한다.
+        # 근거가 없으면 기존 단일 인자 파서와도 호환된다.
+        if not body.text.strip():
+            raise ValueError("정산 내용을 입력해 주세요.")
+        if body.supplied_evidence is None:
+            return parse(body.text)
+        return parse(body.text, supplied_evidence=body.supplied_evidence)
 
-@app.post("/api/sessions/{sid}/calculate")
-def calculate(sid: str):
-    with _lock:
-        session = _get(sid)
-        if not session["confirmed"]:
-            raise HTTPException(409, "먼저 정산 조건을 확인해야 합니다.")
+    @app.post("/parse", response_model=ParseResult)
+    def parse_request(body: ParseBody):
+        # 팀원의 추출·검토 API: 결과만 반환하며 세션은 저장하지 않는다.
         try:
-            result = calculate_settlement(session["context"])
-        except (CalculationError, ParserError, ValueError) as exc:
-            raise HTTPException(422, str(exc)) from exc
-            return serialize_calculation(result)
+            return extract(body)
+        except ManualInputRequired as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "manual_input_required", "message": str(exc)},
+            ) from exc
+        except (ParserAPIError, ParserConfigurationError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "parser_unavailable"},
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_input"},
+            ) from exc
+
+    @app.get("/")
+    def home():
+        return FileResponse(ROOT / "frontend" / "index.html")
+
+    @app.get("/api/schema")
+    def schema():
+        return load_contract()[1]
+
+    @app.get("/api/sessions")
+    def sessions():
+        with closing(sqlite3.connect(store.path)) as db:
+            rows = db.execute("SELECT document FROM sessions ORDER BY rowid DESC LIMIT 100").fetchall()
+        items = []
+        for row in rows:
+            doc = json.loads(row[0])
+            rev = doc["revisions"][-1]
+            items.append({"session_id": doc["session_id"], "title": doc["source_text"][:60],
+                          "input_revision": rev["input_revision"], "created_at": rev["created_at"]})
+        return items
+
+    @app.post("/api/sessions")
+    def new_session(body: ParseBody):
+        if not body.text.strip():
+            raise HTTPException(422, "정산 내용을 입력해 주세요.")
+        sid = store.start(extract(body))
+        return store.view(sid)
+
+    @app.post("/api/sessions/manual")
+    def manual_session(body: ManualBody):
+        contract = load_contract()
+        parsed = SimpleNamespace(context=validate_context_data(body.context),
+                                 source_text=body.source_text, supplied_evidence=None,
+                                 model="manual", prompt_version=contract[2],
+                                 schema_sha256=contract[3], attempts=0)
+        return store.view(store.start(parsed))
+
+    @app.get("/api/sessions/{sid}")
+    def get_session(sid: str):
+        return require_session(sid)
+
+    @app.patch("/api/sessions/{sid}/context")
+    def edit_session(sid: str, body: EditBody):
+        require_session(sid)
+        store.revise(sid, body.input_revision, body.context)
+        return store.view(sid)
+
+    @app.post("/api/sessions/{sid}/confirm")
+    def confirm_session(sid: str, body: ConfirmBody):
+        require_session(sid)
+        return store.confirm(sid, body.input_revision, reviewed_by=body.reviewed_by,
+                             review_notes=body.review_notes, checks=body.checks.model_dump())
+
+    @app.post("/api/sessions/{sid}/calculate")
+    def calculate_session(sid: str, body: CalculateBody):
+        require_session(sid)
+        return store.calculate(sid, body.confirmation_id)
+
+    app.include_router(receipt_router(store, parse, ROOT, ocr=ocr))
+    return app
+
+
+app = create_app(os.getenv("SETTLEMENT_DB_PATH"))
