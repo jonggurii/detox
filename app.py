@@ -108,4 +108,4 @@ def calculate(sid: str):
             result = calculate_settlement(session["context"])
         except (CalculationError, ParserError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
-        return serialize_calculation(result)
+            return serialize_calculation(result)
