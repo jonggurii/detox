@@ -62,7 +62,21 @@ class CalculateBody(Body):
 
 def create_app(db_path=None, parser=None, ocr=None):
     app = FastAPI(title="모아정산", version="0.1.0")
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
+    allowed_hosts = [
+    "localhost",
+    "127.0.0.1",
+    "172.21.37.217",
+    "testserver",
+    ]
+
+    dev_host = os.getenv("SETTLEMENT_DEV_HOST")
+    if dev_host:
+        allowed_hosts.append(dev_host)
+
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=allowed_hosts,
+    )
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
     parse = parser or parse_and_review
 
