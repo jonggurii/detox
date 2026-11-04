@@ -1,41 +1,44 @@
-export type AnyObject = Record<string, any>;
-export type Session = {
-  session_id: string;
-  source_text: string;
-  supplied_evidence?: string | null;
-  revisions: Array<{input_revision: number; context: AnyObject; issues: Array<{code:string; path:string; question:string}>}>;
-  calculations: Array<{input_revision: number; result: {participant_totals: Record<string,number>; settlements: Array<{expense_index:number; from_participant:string; to_participant:string; amount:number}>; allocations: Array<{expense_index:number; item_index:number; participant_name:string; amount:number}>}} >;
-};
+export type Json = Record<string, any>;
+export type Issue = {code: string; path: string; question: string};
+export type Revision = {input_revision: number; context: Json; issues: Issue[]};
+export type Transfer = {expense_index:number; from_participant:string; to_participant:string; amount:number};
+export type Calculation = {input_revision:number; result:{participant_totals:Record<string,number>; settlements:Transfer[]; allocations:Array<{expense_index:number;item_index:number;participant_name:string;amount:number}>}};
+export type Session = {session_id:string; source_text:string; supplied_evidence?:string|null; revisions:Revision[]; calculations:Calculation[]};
+export type SessionSummary = {session_id:string; title?:string; created_at?:string; input_revision?:number};
+export type Receipt = {receipt_id:string; review_revision:number; warning?:string|null; ocr?:{text?:string};fields?:{items?:Array<{name?:string|null;amount?:number|null}>;total_amount?:number|null;warnings?:string[]};review?:Json|null};
 const BASE = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/$/, '');
-export function apiBase() { return BASE; }
-export async function api<T = any>(path: string, method = 'GET', body?: unknown): Promise<T> {
-  if (!BASE) throw new Error('mobile/.env에 EXPO_PUBLIC_API_URL=http://PC의_IP:8000 을 설정하세요.');
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+export const apiBase = () => BASE;
+export async function request<T>(path:string, method='GET', body?:unknown):Promise<T>{
+  if(!BASE) throw new Error('mobile/.env에 EXPO_PUBLIC_API_URL=http://PC_IP:8000을 설정하세요.');
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),60000);
   try {
-    const response = await fetch(`${BASE}${path}`, {
-      method, headers: body === undefined ? undefined : {'Content-Type':'application/json'},
-      body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal,
-    });
-    const raw = await response.text();
-    let data: any;
-    try { data = raw ? JSON.parse(raw) : null; } catch { data = raw; }
-    if (!response.ok) {
-      const detail = data?.detail;
-      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail ?? data ?? `HTTP ${response.status}`));
-    }
+    const response=await fetch(BASE+path,{method,headers:body===undefined?undefined:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal});
+    const text=await response.text(); let data:any=text;
+    try{data=text?JSON.parse(text):null;}catch{}
+    if(!response.ok){const detail=data?.detail; throw new Error(typeof detail==='string'?detail:JSON.stringify(detail??data??`HTTP ${response.status}`));}
     return data as T;
-  } catch (e: any) {
-    if (e?.name === 'AbortError') throw new Error('서버 응답 시간이 초과됐어요. PC의 FastAPI 실행 상태를 확인하세요.');
-    throw e;
-  } finally { clearTimeout(timeout); }
+  }catch(e:any){if(e?.name==='AbortError')throw new Error('서버 연결 시간이 초과됐어요. PC·스마트폰 네트워크와 FastAPI를 확인하세요.');throw e;}
+  finally{clearTimeout(timer);}
 }
-export const sessionApi = {
-  list: () => api<Array<{session_id:string;title?:string}>>('/api/sessions'),
-  get: (id:string) => api<Session>(`/api/sessions/${encodeURIComponent(id)}`),
-  manual: (source_text:string, context:AnyObject) => api<Session>('/api/sessions/manual','POST',{source_text,context}),
-  ai: (text:string) => api<Session>('/api/sessions','POST',{text,supplied_evidence:null}),
-  edit: (id:string, input_revision:number, context:AnyObject) => api<Session>(`/api/sessions/${encodeURIComponent(id)}/context`,'PATCH',{input_revision,context}),
-  confirm: (id:string, input_revision:number, reviewed_by:string, review_notes:string, checks:AnyObject) => api<{confirmation_id:string}>(`/api/sessions/${encodeURIComponent(id)}/confirm`,'POST',{input_revision,reviewed_by,review_notes,checks}),
-  calculate: (id:string, confirmation_id:string) => api<Session['calculations'][number]>(`/api/sessions/${encodeURIComponent(id)}/calculate`,'POST',{confirmation_id}),
+export const sessionApi={
+ list:()=>request<SessionSummary[]>('/api/sessions'),
+ get:(sid:string)=>request<Session>(`/api/sessions/${encodeURIComponent(sid)}`),
+ ai:(text:string)=>request<Session>('/api/sessions','POST',{text,supplied_evidence:null}),
+ manual:(source_text:string,context:Json)=>request<Session>('/api/sessions/manual','POST',{source_text,context}),
+ edit:(sid:string,input_revision:number,context:Json)=>request<Session>(`/api/sessions/${encodeURIComponent(sid)}/context`,'PATCH',{input_revision,context}),
+ confirm:(sid:string,input_revision:number,reviewed_by:string,review_notes:string,checks:Json)=>request<{confirmation_id:string}>(`/api/sessions/${encodeURIComponent(sid)}/confirm`,'POST',{input_revision,reviewed_by,review_notes,checks}),
+ calculate:(sid:string,confirmation_id:string)=>request<Calculation>(`/api/sessions/${encodeURIComponent(sid)}/calculate`,'POST',{confirmation_id}),
+ schema:()=>request<Json>('/api/schema'),
+};
+export async function uploadReceipt(uri:string):Promise<Receipt>{
+ if(!BASE)throw new Error('서버 주소를 먼저 설정하세요.');
+ const form=new FormData();form.append('file',{uri,name:'receipt.jpg',type:'image/jpeg'} as any);
+ const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),120000);
+ try{const res=await fetch(BASE+'/api/receipts',{method:'POST',body:form,signal:controller.signal});const data=await res.json();if(!res.ok)throw new Error(typeof data?.detail==='string'?data.detail:JSON.stringify(data?.detail??data));return data as Receipt;}
+ finally{clearTimeout(timer);}
+}
+export const receiptApi={
+ draft:(rid:string,body:Json)=>request<Session>(`/api/receipts/${encodeURIComponent(rid)}/draft`,'POST',body),
+ review:(rid:string,body:Json)=>request<{receipt_id:string;review_revision:number;evidence:string;hint:string}>(`/api/receipts/${encodeURIComponent(rid)}/review`,'POST',body),
+ ai:(rid:string,expected_review_revision:number,text:string)=>request<Session>(`/api/receipts/${encodeURIComponent(rid)}/ai`,'POST',{expected_review_revision,text}),
 };
