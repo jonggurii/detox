@@ -20,6 +20,8 @@ from settlements.workflow_store import WorkflowError, WorkflowStore
 from settlements.calculator import CalculationError
 from settlements.receipt_api import receipt_router
 
+from backend.multimodal_router import make_multimodal_router
+
 ROOT = Path(__file__).resolve().parent
 
 
@@ -65,7 +67,6 @@ def create_app(db_path=None, parser=None, ocr=None):
     allowed_hosts = [
     "localhost",
     "127.0.0.1",
-    "172.21.37.217",
     "testserver",
     ]
 
@@ -75,7 +76,11 @@ def create_app(db_path=None, parser=None, ocr=None):
 
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=allowed_hosts,
+        allowed_hosts=[
+        "localhost",
+        "127.0.0.1",
+        "172.21.97.45",
+    ],
     )
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
     parse = parser or parse_and_review
@@ -206,3 +211,5 @@ def create_app(db_path=None, parser=None, ocr=None):
 
 
 app = create_app(os.getenv("SETTLEMENT_DB_PATH"))
+
+

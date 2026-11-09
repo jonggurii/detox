@@ -28,7 +28,7 @@ classes:
     evidence: [로그 1, 로그 4, 로그 7, 로그 14]
     attributes:
       모임 정산 ID: {type: string, key: true}
-      연결된 참여자 수: {type: int, derived: true, note: "연결된 참여자 수. 찬조자도 포함할 수 있으므로 실제 분담 인원은 각 비용 나누는 기준에서 구한다.", evidence: [로그 8, 로그 12, 로그 18]}
+      연결된 참여자 수: {type: int, derived: true, note: "연결된 참여자 수. 찬조자도 포함할 수 있으므로 실제 분담 인원은 각 비용 나누는 기준에서 구한다. 찬조자가 분담 인원과 다르다는 것은 로그 18을 통해 알 수 있다.", evidence: [로그 8, 로그 12, 로그 18]}
       모임 정산 상태: {type: enum, values: [초안, 요청됨, 완료], derived: true, note: "입력 검토와 모든 송금 요청 내역의 처리 상태로 결정한다. 완료의 조건은 하단 규칙 참조.", evidence: [로그 4, 로그 14]}
     relations:
       - 연결된 참여자: Participant # 참여자

@@ -42,3 +42,17 @@ export const receiptApi={
  review:(rid:string,body:Json)=>request<{receipt_id:string;review_revision:number;evidence:string;hint:string}>(`/api/receipts/${encodeURIComponent(rid)}/review`,'POST',body),
  ai:(rid:string,expected_review_revision:number,text:string)=>request<Session>(`/api/receipts/${encodeURIComponent(rid)}/ai`,'POST',{expected_review_revision,text}),
 };
+
+// 이미지와 자연어를 함께 보내는 멀티모달 분석 API (별도 백엔드 라우터 필요)
+export async function analyzeImage(image:{uri:string;mimeType:string;name:string},text:string):Promise<Session>{
+ if(!BASE)throw new Error('EXPO_PUBLIC_API_URL이 설정되지 않았어요.');
+ const form=new FormData();
+ form.append('file',{uri:image.uri,name:image.name,type:image.mimeType} as any);
+ form.append('text',text);
+ const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),180000);
+ try{const res=await fetch(BASE+'/api/sessions/multimodal',{method:'POST',body:form,signal:controller.signal});
+ const raw=await res.text();let data:any;try{data=JSON.parse(raw);}catch{data=raw;}
+ if(!res.ok)throw new Error(typeof data?.detail==='string'?data.detail:JSON.stringify(data?.detail||data));
+ return data as Session;
+ }catch(e:any){if(e?.name==='AbortError')throw new Error('사진 분석 시간이 초과됐어요. 서버 로그를 확인해 주세요.');throw e;}finally{clearTimeout(timer);}
+}
