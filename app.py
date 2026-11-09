@@ -79,7 +79,7 @@ def create_app(db_path=None, parser=None, ocr=None):
         allowed_hosts=[
         "localhost",
         "127.0.0.1",
-        "172.21.97.45",
+        "192.168.0.27",
     ],
     )
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")

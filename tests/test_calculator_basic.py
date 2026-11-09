@@ -62,8 +62,9 @@ def test_single_person_zero():
 
 def test_equal_remainder():
     data = context(10000)
-    with pytest.raises(CalculationError, match="unresolved_rounding"):
-        calculate_settlement(data)
+    # 기본 정책: 참여자 순서대로 1원씩 분배
+    assert checked(data).participant_totals == {"A": 3334, "B": 3333, "C": 3333}
+    # 명시적 부담자 지정은 기존 정책대로 우선 적용
     data["split_rules"][0]["remainder_payer_name"] = "C"
     assert checked(data).participant_totals == {"A": 3333, "B": 3333, "C": 3334}
 

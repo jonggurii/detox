@@ -1,5 +1,5 @@
-import React,{useCallback,useEffect,useState} from 'react';
-import {ActivityIndicator,Alert,KeyboardAvoidingView,Platform,Pressable,ScrollView,Share,StatusBar,StyleSheet,Switch,Text,TextInput,View} from 'react-native';
+import React,{useCallback,useEffect,useRef,useState} from 'react';
+import {ActivityIndicator,Alert,BackHandler,Keyboard,KeyboardAvoidingView,Platform,Pressable,ScrollView,Share,StatusBar,StyleSheet,Switch,Text,TextInput,View} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import {sessionApi,analyzeImage} from '../services/api';
@@ -13,8 +13,23 @@ type LocalDiff={session:Session;calculation:Calculation};
 type MetaMap=Record<string,LocalMeta>;
 const STORAGE='moa_mobile_board_v2';
 const DIFF_STORAGE='moa_mobile_direct_transfers_v1';
+const CREATE_DRAFT_STORAGE='moa_mobile_create_draft_v1';
+const EDIT_DRAFT_STORAGE='moa_mobile_edit_draft_v1';
 const C={bg:'#F5F7F3',white:'#FFFFFF',ink:'#173A38',green:'#176858',greenSoft:'#E7F2EB',line:'#DEE7E0',muted:'#71817A',orange:'#B9652E',orangeSoft:'#FFF2E5'};
 const money=(n:any)=>`${Number(n||0).toLocaleString('ko-KR')}원`;
+// 송금 금액은 변경하지 않고, 화면/공유용으로 송금자→수취인 가나다순으로 정리한다.
+const groupedTransfers=(rows:Array<{from_participant:string;to_participant:string;amount:number}>)=>{
+ const grouped=new Map<string,{from_participant:string;to_participant:string;amount:number}>();
+ for(const t of rows){
+  if(t.amount<=0)continue;
+  const key=JSON.stringify([t.from_participant,t.to_participant]);
+  const old=grouped.get(key);
+  if(old)old.amount+=t.amount;
+  else grouped.set(key,{from_participant:t.from_participant,to_participant:t.to_participant,amount:t.amount});
+ }
+ const ko=new Intl.Collator('ko-KR');
+ return [...grouped.values()].sort((a,b)=>ko.compare(a.from_participant,b.from_participant)||ko.compare(a.to_participant,b.to_participant));
+};
 const names=(s:string)=>s.split(/[,，\n]/).map(v=>v.trim()).filter(Boolean);
 const safeAmount=(s:string)=>{const v=s.replace(/,/g,'').trim();if(!/^\d+$/.test(v)||!Number.isSafeInteger(Number(v)))throw new Error('금액은 0 이상의 정확한 원 단위 정수로 입력해 주세요.');return Number(v);};
 const clone=<T,>(x:T):T=>JSON.parse(JSON.stringify(x));
@@ -45,12 +60,37 @@ function SchemaEditor({schema,value,onChange,path=[],label='정산 조건',depth
  };
  return <>{render(schema,value,path,label,depth)}</>;
 }
+// 화면에서만 사용하는 미리보기: 실제 확정 계산은 서버에서 수행한다.
+const previewItem=(item:any,rule:any,contributions:any[],ei:number,ii:number)=>{
+ const applied=contributions.reduce((sum:number,c:any)=>sum+(c.expense_index===ei?(c.uses||[]).reduce((v:number,u:any)=>v+(u.item_index===ii?Number(u.amount||0):0),0):0),0);
+ const gross=Number(item?.amount);const net=gross-applied;
+ if(!Number.isSafeInteger(gross)||gross<0||!Number.isSafeInteger(applied)||applied<0||net<0)return {error:'항목 금액과 찬조금 적용액을 확인해 주세요.',shares:[] as {name:string;amount:number}[]};
+ if(!rule)return {error:'분담 규칙이 없어요.',shares:[] as {name:string;amount:number}[]};
+ const members:string[]=Array.isArray(rule.participant_names)?rule.participant_names:[];
+ if(!members.length||new Set(members).size!==members.length)return {error:'분담자를 한 명 이상 중복 없이 선택해 주세요.',shares:[] as {name:string;amount:number}[]};
+ if(rule.method==='equal'){
+  if(rule.remainder_payer_name&& !members.includes(rule.remainder_payer_name))return {error:'잔액 부담자가 분담자에 포함되어야 해요.',shares:[] as {name:string;amount:number}[]};
+  const each=Math.floor(net/members.length),remainder=net%members.length;
+  if(remainder&&!rule.remainder_payer_name)return {error:`1원 단위 잔액 ${remainder}원을 부담할 사람을 선택해 주세요.`,shares:members.map(name=>({name,amount:each}))};
+  return {error:'',shares:members.map(name=>({name,amount:each+(name===rule.remainder_payer_name?remainder:0)}))};
+ }
+ if(rule.method==='explicit_amount'){
+  const entries:any[]=Array.isArray(rule.individual_amounts)?rule.individual_amounts:[];
+  if(entries.length!==members.length||entries.some(x=>!members.includes(x.participant_name))||new Set(entries.map(x=>x.participant_name)).size!==members.length)return {error:'선택한 모든 분담자의 금액을 각각 지정해 주세요.',shares:[] as {name:string;amount:number}[]};
+  if(entries.some(x=>!Number.isSafeInteger(x.amount)||x.amount<0))return {error:'개인별 금액을 0원 이상의 정수로 입력해 주세요.',shares:[] as {name:string;amount:number}[]};
+  const sum=entries.reduce((v,x)=>v+x.amount,0);
+  if(sum!==net)return {error:`개인별 금액 합계 ${money(sum)}와 분담 대상 금액 ${money(net)}가 달라요.`,shares:entries.map(x=>({name:x.participant_name,amount:x.amount}))};
+  return {error:'',shares:entries.map(x=>({name:x.participant_name,amount:x.amount}))};
+ }
+ return {error:'고급 분담 방식은 서버 검증에서 확인해 주세요.',shares:[] as {name:string;amount:number}[]};
+};
 function FriendlyEditor({value,onChange}:{value:Json;onChange:(v:Json)=>void}){
  const people:string[]=Array.isArray(value.participants)?value.participants:[];
  const expenses:any[]=Array.isArray(value.expenses)?value.expenses:[];
  const rounds:any[]=Array.isArray(value.rounds)?value.rounds:[];
  const rules:any[]=Array.isArray(value.split_rules)?value.split_rules:[];
  const [entry,setEntry]=useState('');
+ const [expandedPreview,setExpandedPreview]=useState<string|null>(null);
  const patch=(key:string,next:any)=>onChange({...value,[key]:next});
  const updateExpense=(ei:number,change:(e:any)=>any)=>patch('expenses',expenses.map((e,i)=>i===ei?change(e):e));
  const itemRules=(ei:number,ii:number)=>rules.filter(r=>r.expense_index===ei&&r.item_index===ii);
@@ -83,9 +123,16 @@ function FriendlyEditor({value,onChange}:{value:Json;onChange:(v:Json)=>void}){
    {!people.includes(e.payer_name)&&<Text style={styles.issue}>결제자를 선택해 주세요.</Text>}
    <Field label="총액 (원)" numeric value={String(e.total_amount??'')} onChange={t=>updateExpense(ei,x=>({...x,total_amount:t===''?null:Number(t.replace(/,/g,''))||0}))}/>
    {rounds.length>0&&<><Text style={styles.label}>차수 선택</Text><View style={styles.wrap}>{rounds.map((r,i)=><Chip key={i} text={`${r.round_number}차`} active={e.round_number===r.round_number} onPress={()=>updateExpense(ei,x=>({...x,round_number:r.round_number}))}/>)}</View></>}
+   {(e.items||[]).length>0&&Number.isFinite(Number(e.total_amount))&&((e.items||[]).reduce((v:number,x:any)=>v+(Number(x.amount)||0),0)!==Number(e.total_amount))&&<Text style={styles.issue}>항목 합계 {money((e.items||[]).reduce((v:number,x:any)=>v+(Number(x.amount)||0),0))}와 결제 총액 {money(e.total_amount)}가 달라요.</Text>}
    {(e.items||[]).map((item:any,ii:number)=>{
     const matching=itemRules(ei,ii);const r=matching[0];const members:string[]=r?.participant_names||[];
     const method=r?.method;
+    const preview=previewItem(item,r,value.contributions||[],ei,ii);
+    const roundMembers:string[]=rounds.find(x=>x.round_number===e.round_number)?.participant_names||people;
+    const selectable=roundMembers.filter(p=>people.includes(p));
+    const previewKey=`${ei}-${ii}`;
+    const relatedExceptions=(value.exceptions||[]).filter((x:any)=>x.expense_index===ei&&x.item_index===ii);
+    const itemContribution=(value.contributions||[]).reduce((sum:number,c:any)=>sum+(c.expense_index===ei?(c.uses||[]).reduce((v:number,u:any)=>v+(u.item_index===ii?Number(u.amount||0):0),0):0),0);
     return <View key={ii} style={styles.arrayRow}>
      <View style={styles.rowBetween}><Text style={styles.subhead}>항목 {ii+1} · {item.name||'이름 미정'}</Text><Pressable onPress={()=>removeItem(ei,ii)}><Text style={styles.deleteText}>항목 삭제</Text></Pressable></View>
      <Field label="항목명" value={item.name||''} onChange={t=>updateExpense(ei,x=>({...x,items:x.items.map((y:any,j:number)=>j===ii?{...y,name:t}:y)}))}/>
@@ -94,7 +141,18 @@ function FriendlyEditor({value,onChange}:{value:Json;onChange:(v:Json)=>void}){
      {!r?<><Text style={styles.issue}>이 항목의 분담 규칙이 없어요.</Text><Button text="＋ 이 항목의 분담 규칙 추가" onPress={()=>replaceRule(ei,ii,defaultRule(ei,ii))}/></>:<>
       <Text style={styles.label}>분담 방식</Text><View style={styles.wrap}><Chip text="균등 분담" active={method==='equal'} onPress={()=>replaceRule(ei,ii,{...r,method:'equal',individual_amounts:undefined})}/><Chip text="개인별 금액 지정" active={method==='explicit_amount'} onPress={()=>replaceRule(ei,ii,{...r,method:'explicit_amount',individual_amounts:members.map(p=>({participant_name:p,amount:null}))})}/></View>
       <Text style={styles.label}>이 항목을 부담하는 사람</Text><View style={styles.wrap}>{people.map(p=><Chip key={p} text={p} active={members.includes(p)} onPress={()=>{const next=members.includes(p)?members.filter(x=>x!==p):[...members,p];const amounts=method==='explicit_amount'?{individual_amounts:next.map(n=>(r.individual_amounts||[]).find((x:any)=>x.participant_name===n)||{participant_name:n,amount:null})}:{};replaceRule(ei,ii,{...r,participant_names:next,...amounts});}}/>)}</View>
+      <View style={styles.wrap}><Button text="해당 차수 모두 선택" secondary small onPress={()=>replaceRule(ei,ii,{...r,participant_names:[...selectable],...(method==='explicit_amount'?{individual_amounts:selectable.map(p=>(r.individual_amounts||[]).find((x:any)=>x.participant_name===p)||{participant_name:p,amount:null})}:{})})}/><Button text="모두 해제" secondary small onPress={()=>replaceRule(ei,ii,{...r,participant_names:[],...(method==='explicit_amount'?{individual_amounts:[]}:{})})}/></View>
       {!members.length&&<Text style={styles.issue}>최소 한 명의 분담자를 선택해 주세요.</Text>}
+      {method==='equal'&&members.length>0&&Number(item.amount)-itemContribution>=0&&((Number(item.amount)-itemContribution)%members.length!==0)&&<><Text style={styles.label}>나머지 원 단위 부담자</Text><View style={styles.wrap}>{members.map(p=><Chip key={'remainder'+p} text={p} active={r.remainder_payer_name===p} onPress={()=>replaceRule(ei,ii,{...r,remainder_payer_name:p})}/>)}</View></>}
+      <Pressable onPress={()=>setExpandedPreview(v=>v===previewKey?null:previewKey)} style={styles.previewHeader}><Text style={styles.previewTitle}>예상 분담액 {expandedPreview===previewKey?'접기 ▲':'펼치기 ▼'}</Text><Text style={styles.muted}>{members.length}명</Text></Pressable>
+      {expandedPreview===previewKey&&<View style={styles.previewBody}>
+       {itemContribution>0&&<Text style={styles.muted}>찬조금 적용: {money(itemContribution)} 차감</Text>}
+       {preview.error?<Text style={styles.issue}>{preview.error}</Text>:null}
+       {preview.shares.map(x=><View key={x.name} style={styles.infoRow}><Text style={styles.infoLabel}>{x.name}</Text><Text style={styles.infoValue}>{money(x.amount)}</Text></View>)}
+       {relatedExceptions.length>0&&<Text style={styles.issue}>개인별 예외 {relatedExceptions.length}건이 있어요. 위 금액은 예외 적용 전 미리보기이며 최종 금액은 서버 계산으로 확인하세요.</Text>}
+       <Text style={styles.helper}>미리보기는 확정 송금액이 아니며, 서버 검증 및 계산이 최종 기준입니다.</Text>
+      </View>}
+
       {method==='explicit_amount'&&<>{members.map(p=>{const amount=(r.individual_amounts||[]).find((x:any)=>x.participant_name===p)?.amount;return <Field key={p} label={`${p}의 부담 금액 (원)`} numeric value={amount==null?'':String(amount)} onChange={t=>replaceRule(ei,ii,{...r,individual_amounts:members.map(n=>({participant_name:n,amount:n===p?(t===''?null:Number(t.replace(/,/g,''))||0):((r.individual_amounts||[]).find((x:any)=>x.participant_name===n)?.amount??null)}))})}/>;})}<Text style={styles.helper}>개인별 금액 합계가 항목 금액과 같아야 해요.</Text></>}
       <Button text="분담 규칙 삭제" secondary small onPress={()=>replaceRule(ei,ii,null)}/>
      </>}
@@ -113,11 +171,102 @@ export default function HomeScreen(){
  const [title,setTitle]=useState('');const [aiText,setAiText]=useState('');const [manualPeople,setManualPeople]=useState<string[]>([]);const [personEntry,setPersonEntry]=useState('');const [manualKind,setManualKind]=useState<'equal'|'diff'>('equal');const [diffTransfers,setDiffTransfers]=useState<DiffTransfer[]>([{from:'',to:'',amount:''}]);const [localDiffs,setLocalDiffs]=useState<Record<string,LocalDiff>>({});const [diffHydrated,setDiffHydrated]=useState(false);const [selectedImage,setSelectedImage]=useState<{uri:string;mimeType:string;name:string}|null>(null);const [manualPayer,setManualPayer]=useState('');const [manualItem,setManualItem]=useState('식사비');const [manualAmount,setManualAmount]=useState('');const [manualRound,setManualRound]=useState('1');
  const [showAdvanced,setShowAdvanced]=useState(false);const [menuSid,setMenuSid]=useState<string|null>(null);const [checks,setChecks]=useState<Record<string,boolean>>({});const [reviewer,setReviewer]=useState('');const [reviewNote,setReviewNote]=useState('조건 확인 완료');
 
+ // Stage 1: local drafts, hardware back navigation, and duplicate-request guard.
+ const [draftsHydrated,setDraftsHydrated]=useState(false);
+ const [savedCreateDraft,setSavedCreateDraft]=useState<any|null>(null);
+ const [savedEditDraft,setSavedEditDraft]=useState<{sessionId:string;inputRevision:number;draft:Json}|null>(null);
+ const [createDraftEnabled,setCreateDraftEnabled]=useState(false);
+ const busyLock=useRef(false);
+ const backActionRef=useRef<()=>boolean>(()=>true);
+ const hasCreateContent=Boolean(title.trim()||aiText.trim()||selectedImage||manualPeople.length||personEntry.trim()||manualAmount.trim()||manualPayer.trim()||diffTransfers.some(t=>t.from||t.to||t.amount));
+ const snapshotCreate=()=>({title,aiText,mode,manualPeople,personEntry,manualKind,diffTransfers,manualPayer,manualItem,manualAmount,manualRound});
+ const restoreCreate=(s:any)=>{
+  setTitle(s.title||'');setAiText(s.aiText||'');setMode(s.mode==='custom'?'custom':'ai');
+  setManualPeople(Array.isArray(s.manualPeople)?s.manualPeople:[]);setPersonEntry(s.personEntry||'');
+  setManualKind(s.manualKind==='diff'?'diff':'equal');setDiffTransfers(Array.isArray(s.diffTransfers)&&s.diffTransfers.length?s.diffTransfers:[{from:'',to:'',amount:''}]);
+  setManualPayer(s.manualPayer||'');setManualItem(s.manualItem||'식사비');setManualAmount(s.manualAmount||'');setManualRound(s.manualRound||'1');
+  setSelectedImage(null);setCreateDraftEnabled(true);setPage('create');
+ };
+ const clearCreateDraft=()=>{setSavedCreateDraft(null);AsyncStorage.removeItem(CREATE_DRAFT_STORAGE).catch(()=>{});};
+ const clearEditDraft=()=>{setSavedEditDraft(null);AsyncStorage.removeItem(EDIT_DRAFT_STORAGE).catch(()=>{});};
+ useEffect(()=>{
+  let mounted=true;
+  Promise.all([AsyncStorage.getItem(CREATE_DRAFT_STORAGE),AsyncStorage.getItem(EDIT_DRAFT_STORAGE)])
+   .then(([a,b])=>{if(!mounted)return;try{if(a)setSavedCreateDraft(JSON.parse(a));}catch{}try{if(b)setSavedEditDraft(JSON.parse(b));}catch{}})
+   .finally(()=>{if(mounted)setDraftsHydrated(true);});
+  return()=>{mounted=false;};
+ },[]);
+ useEffect(()=>{
+  if(!draftsHydrated||!createDraftEnabled||page!=='create')return;
+  const snapshot=hasCreateContent?snapshotCreate():null;
+  const timer=setTimeout(()=>{
+   if(snapshot){AsyncStorage.setItem(CREATE_DRAFT_STORAGE,JSON.stringify(snapshot)).then(()=>setSavedCreateDraft(snapshot)).catch(()=>{});}
+   else clearCreateDraft();
+  },450);
+  return()=>clearTimeout(timer);
+ },[draftsHydrated,createDraftEnabled,page,title,aiText,mode,manualPeople,personEntry,manualKind,diffTransfers,manualPayer,manualItem,manualAmount,manualRound,selectedImage]);
+ useEffect(()=>{
+  if(!draftsHydrated||page!=='edit'||!doc||!draft||!dirty)return;
+  const snapshot={sessionId:doc.session_id,inputRevision:doc.revisions[doc.revisions.length-1].input_revision,draft};
+  const timer=setTimeout(()=>{AsyncStorage.setItem(EDIT_DRAFT_STORAGE,JSON.stringify(snapshot)).then(()=>setSavedEditDraft(snapshot)).catch(()=>{});},450);
+  return()=>clearTimeout(timer);
+ },[draftsHydrated,page,doc,draft,dirty]);
+ const navigateBack=()=>{
+  Keyboard.dismiss();
+  if(busyLock.current)return true;
+  if(page==='home'){
+   Alert.alert('앱 종료','모아정산을 종료할까요?',[
+    {text:'취소',style:'cancel'},
+    {text:'종료',onPress:()=>BackHandler.exitApp()},
+   ]);return true;
+  }
+  if(page==='create'){
+   if(hasCreateContent){
+    Alert.alert('작성 중인 정산','입력 내용은 임시 저장됩니다. 홈으로 이동할까요?',[
+     {text:'계속 작성',style:'cancel'},
+     {text:'홈으로',onPress:()=>{AsyncStorage.setItem(CREATE_DRAFT_STORAGE,JSON.stringify(snapshotCreate())).catch(()=>{});setPage('home');setCreateDraftEnabled(false);}},
+    ]);
+   }else{setPage('home');setCreateDraftEnabled(false);}
+   return true;
+  }
+  if(page==='edit'){
+   if(dirty){
+    Alert.alert('저장하지 않은 수정 내용','수정 내용은 임시 저장됩니다. 검수 화면으로 이동할까요?',[
+     {text:'계속 수정',style:'cancel'},
+     {text:'검수 화면으로',onPress:()=>{if(doc&&draft)AsyncStorage.setItem(EDIT_DRAFT_STORAGE,JSON.stringify({sessionId:doc.session_id,inputRevision:doc.revisions[doc.revisions.length-1].input_revision,draft})).catch(()=>{});setPage('review');}},
+    ]);
+   }else setPage('review');
+   return true;
+  }
+  if(page==='detail'){setPage('home');return true;}
+  if(page==='review'){setPage('home');return true;}
+  return true;
+ };
+ backActionRef.current=navigateBack;
+ useEffect(()=>{
+  if(Platform.OS!=='android')return;
+  const subscription=BackHandler.addEventListener('hardwareBackPress',()=>backActionRef.current());
+  return()=>subscription.remove();
+ },[]);
  const rev=doc?.revisions?.[doc.revisions.length-1];const ctx=rev?.context||{};const issues=rev?.issues||[];
  const active=[...history,...Object.values(localDiffs).map(x=>({session_id:x.session.session_id,title:meta[x.session.session_id]?.title||'차액 정산'}))].filter(s=>!meta[s.session_id]?.deleted);
  const total=(d:Session)=>{const c=d.revisions[d.revisions.length-1].context;return (c.expenses||[]).reduce((sum:number,e:any)=>sum+(Number(e.total_amount)||0),0)};
  const lastCalculation=(d:Session)=>[...(d.calculations||[])].reverse().find(c=>c.input_revision===d.revisions[d.revisions.length-1].input_revision)||null;
- const load=useCallback((d:Session,target:Page='review')=>{setDoc(d);setDraft(clone(d.revisions[d.revisions.length-1].context));setDirty(false);setChecks({});setReviewer('');setReviewNote('조건 확인 완료');setCalculation(lastCalculation(d));setPage(target);},[]);
+ const load=useCallback((d:Session,target:Page='review')=>{
+  setDoc(d);setDraft(clone(d.revisions[d.revisions.length-1].context));setDirty(false);setChecks({});setReviewer('');setReviewNote('조건 확인 완료');setCalculation(lastCalculation(d));setPage(target);
+  const revision=d.revisions[d.revisions.length-1].input_revision;
+  AsyncStorage.getItem(EDIT_DRAFT_STORAGE).then(raw=>{
+   if(!raw)return;
+   try{
+    const saved=JSON.parse(raw);
+    if(saved.sessionId!==d.session_id||saved.inputRevision!==revision)return;
+    Alert.alert('수정 내용 복구','이 정산에서 저장하지 않은 수정 내용이 있습니다.',[
+     {text:'삭제',style:'destructive',onPress:()=>clearEditDraft()},
+     {text:'복구',onPress:()=>{setDraft(saved.draft);setDirty(true);setPage('edit');}},
+    ]);
+   }catch{}
+  }).catch(()=>{});
+ },[]);
  const refresh=useCallback(async()=>{
   const list=await sessionApi.list();setHistory(list);
   const loaded:Record<string,Session>={};
@@ -133,10 +282,22 @@ export default function HomeScreen(){
  useEffect(()=>{AsyncStorage.getItem(DIFF_STORAGE).then(v=>{if(v)setLocalDiffs(JSON.parse(v));}).catch(()=>{}).finally(()=>setDiffHydrated(true));},[]);
  useEffect(()=>{if(!diffHydrated)return;AsyncStorage.setItem(DIFF_STORAGE,JSON.stringify(localDiffs)).catch(()=>{});},[localDiffs,diffHydrated]);
  useEffect(()=>{refresh().catch(e=>setMessage('서버 연결 실패: '+String(e?.message||e)));sessionApi.schema().then(setSchema).catch(()=>{});},[refresh]);
- const run=async(fn:()=>Promise<void>)=>{if(busy)return;setBusy(true);try{await fn();}catch(e:any){Alert.alert('확인해 주세요',String(e?.message||e));}finally{setBusy(false);}};
+ const run=async(fn:()=>Promise<void>)=>{if(busyLock.current)return;busyLock.current=true;setBusy(true);try{await fn();}catch(e:any){Alert.alert('확인해 주세요',String(e?.message||e));}finally{busyLock.current=false;setBusy(false);}};
  const setLocal=(sid:string,patch:Partial<LocalMeta>)=>setMeta(prev=>({...prev,[sid]:{...prev[sid],...patch}}));
- const startNew=()=>{setDoc(null);setDraft(null);setCalculation(null);setTitle('');setAiText('');setSelectedImage(null);setManualPeople([]);setPersonEntry('');setDiffTransfers([{from:'',to:'',amount:''}]);setManualKind('equal');setMode('ai');setMessage('');setPage('create');};
- const afterCreate=async(d:Session)=>{if(title.trim())setLocal(d.session_id,{title:title.trim()});load(d,'review');await refresh();setMessage('추출된 조건을 확인한 뒤 정산을 시작하세요.');};
+ const startNew=()=>{
+  const fresh=()=>{setDoc(null);setDraft(null);setCalculation(null);setTitle('');setAiText('');setSelectedImage(null);setManualPeople([]);setPersonEntry('');setDiffTransfers([{from:'',to:'',amount:''}]);setManualKind('equal');setMode('ai');setManualPayer('');setManualItem('식사비');setManualAmount('');setManualRound('1');setMessage('');setCreateDraftEnabled(true);setPage('create');};
+  AsyncStorage.getItem(CREATE_DRAFT_STORAGE).then(raw=>{
+   if(!raw){fresh();return;}
+   try{
+    const saved=JSON.parse(raw);
+    Alert.alert('이전 입력 복구','작성 중이던 정산 내용이 있습니다. 이어서 작성할까요?',[
+     {text:'새로 작성',onPress:()=>{clearCreateDraft();fresh();}},
+     {text:'이어서 작성',onPress:()=>{fresh();restoreCreate(saved);}},
+    ]);
+   }catch{fresh();}
+  }).catch(fresh);
+ };
+ const afterCreate=async(d:Session)=>{if(title.trim())setLocal(d.session_id,{title:title.trim()});setCreateDraftEnabled(false);clearCreateDraft();load(d,'review');await refresh();setMessage('추출된 조건을 확인한 뒤 정산을 시작하세요.');};
  const createAI=()=>run(async()=>{if(!aiText.trim()&&!selectedImage)throw new Error('정산 상황이나 사진을 입력해 주세요.');await afterCreate(selectedImage?await analyzeImage(selectedImage,aiText.trim()):await sessionApi.ai(aiText.trim()));});
  const createCustom=()=>run(async()=>{
   const people=manualPeople;if(!people.length||new Set(people).size!==people.length)throw new Error('참여자 명단을 확인해 주세요.');
@@ -149,18 +310,18 @@ export default function HomeScreen(){
  });
  const createBlank=()=>run(async()=>{await afterCreate(await sessionApi.manual(`[사용자 지정] ${title.trim()||'상세 정산'}`,{participants:[],expenses:[]}));setPage('edit');});
  const open=(sid:string)=>run(async()=>{const d=localDiffs[sid]?.session||await sessionApi.get(sid);load(d,lastCalculation(d)?'detail':'review');});
- const saveEdit=()=>run(async()=>{if(!doc||!rev||!draft)return;const updated=await sessionApi.edit(doc.session_id,rev.input_revision,draft);load(updated,'review');await refresh();setMessage('수정 내용을 저장했어요. 확인 항목을 다시 검토해 주세요.');});
+ const saveEdit=()=>run(async()=>{if(!doc||!rev||!draft)return;const updated=await sessionApi.edit(doc.session_id,rev.input_revision,draft);clearEditDraft();load(updated,'review');await refresh();setMessage('수정 내용을 저장했어요. 확인 항목을 다시 검토해 주세요.');});
  const begin=()=>run(async()=>{if(!doc||!rev)return;if(dirty)throw new Error('수정 내용을 먼저 저장해 주세요.');if(issues.length)throw new Error('미해결 확인 항목을 수정해 주세요.');const c=await sessionApi.confirm(doc.session_id,rev.input_revision,'모바일 사용자','정산 시작 버튼으로 조건 확인',{source_reviewed:true,people_resolved:true,conditions_reviewed:true,funding_verified:!!ctx.contributions?.length});const calc=await sessionApi.calculate(doc.session_id,c.confirmation_id);setCalculation(calc);setPage('detail');setMessage('정산이 시작됐어요. 입금 여부는 직접 확인해 주세요.');});
  const deleteSession=()=>{if(doc)deleteById(doc.session_id);};
- const share=()=>run(async()=>{if(!doc||!calculation)return;const latest=localDiffs[doc.session_id]?.session||await sessionApi.get(doc.session_id);if(latest.revisions[latest.revisions.length-1].input_revision!==calculation.input_revision)throw new Error('정산 조건이 변경됐어요. 다시 계산해 주세요.');await Share.share({message:[`[${meta[doc.session_id]?.title||'모아정산'}] 송금 안내`,...calculation.result.settlements.map(t=>`${t.from_participant} → ${t.to_participant}: ${money(t.amount)}`)].join('\n')});});
+ const share=()=>run(async()=>{if(!doc||!calculation)return;const latest=localDiffs[doc.session_id]?.session||await sessionApi.get(doc.session_id);if(latest.revisions[latest.revisions.length-1].input_revision!==calculation.input_revision)throw new Error('정산 조건이 변경됐어요. 다시 계산해 주세요.');await Share.share({message:[`[${meta[doc.session_id]?.title||'모아정산'}] 송금 안내`,...groupedTransfers(calculation.result.settlements).map(t=>`${t.from_participant} → ${t.to_participant}: ${money(t.amount)}`)].join('\n')});});
  const chooseImage=()=>run(async()=>{const perm=await ImagePicker.requestMediaLibraryPermissionsAsync();if(!perm.granted)throw new Error('사진 접근 권한이 필요해요.');const picked=await ImagePicker.launchImageLibraryAsync({mediaTypes:['images'],quality:.8});if(picked.canceled)return;const image=picked.assets[0];setSelectedImage({uri:image.uri,mimeType:image.mimeType||'image/jpeg',name:image.fileName||'receipt.jpg'});});
  const addPerson=()=>{const name=personEntry.trim();if(!name)return;if(manualPeople.includes(name)){Alert.alert('중복된 참여자','이미 추가된 이름이에요.');return;}setManualPeople(p=>[...p,name]);setPersonEntry('');};
  const diffTotal=diffTransfers.reduce((sum,t)=>sum+(Number(t.amount.replace(/,/g,''))||0),0);
  const diffValid=manualAmount.trim()!==''&&/^\d+$/.test(manualAmount.replace(/,/g,''))&&Number(manualAmount.replace(/,/g,''))===diffTotal&&diffTransfers.length>0&&diffTransfers.every(t=>t.from&&t.to&&t.from!==t.to&&manualPeople.includes(t.from)&&manualPeople.includes(t.to)&&/^\d+$/.test(t.amount.replace(/,/g,''))&&Number(t.amount.replace(/,/g,''))>0);
- const createDiff=()=>{if(!diffValid){Alert.alert('금액 불일치','송금액 합계와 총액, 참여자 및 송금 관계를 확인해 주세요.');return;}const sid='local-diff-'+Date.now();const amount=safeAmount(manualAmount);const transfers=diffTransfers.map(t=>({expense_index:0,from_participant:t.from,to_participant:t.to,amount:safeAmount(t.amount)}));const context={participants:manualPeople,rounds:[{round_number:Number(manualRound)||1,participant_names:manualPeople}],expenses:[],split_rules:[],direct_transfers:transfers,transfer_total:amount};const calc:Calculation={input_revision:1,result:{participant_totals:{},settlements:transfers,allocations:[]}};const d:Session={session_id:sid,source_text:'[사용자 지정 차액 정산] 송금 총액 '+money(amount),revisions:[{input_revision:1,context,issues:[]}],calculations:[calc]};setLocalDiffs(v=>({...v,[sid]:{session:d,calculation:calc}}));setLocal(sid,{title:title.trim()||'차액 정산'});load(d,'detail');setMessage('차액 정산이 생성됐어요. 송금 내역을 확인하세요.');};
+ const createDiff=()=>{if(!diffValid){Alert.alert('금액 불일치','송금액 합계와 총액, 참여자 및 송금 관계를 확인해 주세요.');return;}const sid='local-diff-'+Date.now();const amount=safeAmount(manualAmount);const transfers=diffTransfers.map(t=>({expense_index:0,from_participant:t.from,to_participant:t.to,amount:safeAmount(t.amount)}));const context={participants:manualPeople,rounds:[{round_number:Number(manualRound)||1,participant_names:manualPeople}],expenses:[],split_rules:[],direct_transfers:transfers,transfer_total:amount};const calc:Calculation={input_revision:1,result:{participant_totals:{},settlements:transfers,allocations:[]}};const d:Session={session_id:sid,source_text:'[사용자 지정 차액 정산] 송금 총액 '+money(amount),revisions:[{input_revision:1,context,issues:[]}],calculations:[calc]};setLocalDiffs(v=>({...v,[sid]:{session:d,calculation:calc}}));setLocal(sid,{title:title.trim()||'차액 정산'});setCreateDraftEnabled(false);clearCreateDraft();load(d,'detail');setMessage('차액 정산이 생성됐어요. 송금 내역을 확인하세요.');};
  const deleteById=(sid:string)=>Alert.alert('정산 삭제','이 기기의 목록에서 정산을 삭제할까요? 서버에 저장된 원본은 유지돼요.',[{text:'취소',style:'cancel'},{text:'삭제',style:'destructive',onPress:()=>{setLocal(sid,{deleted:true});setPage('home');setDoc(null);}}]);
- const Header=()=> <View style={styles.header}><Pressable onPress={()=>setPage('home')}><Text style={styles.logo}>모아<Text style={{color:C.green}}>정산</Text></Text><Text style={styles.logoSub}>함께 쓴 돈, 함께 확인</Text></Pressable><Text style={styles.headerIcon}>◈</Text></View>;
- const Back=({label='돌아가기'}:{label?:string})=><Pressable style={{marginBottom:16}} onPress={()=>setPage(page==='edit'?'review':'home')}><Text style={styles.link}>‹ {label}</Text></Pressable>;
+ const Header=()=> <View style={styles.header}><Pressable onPress={()=>{if(page!=='home')navigateBack();}}><Text style={styles.logo}>모아<Text style={{color:C.green}}>정산</Text></Text><Text style={styles.logoSub}>함께 쓴 돈, 함께 확인</Text></Pressable><Text style={styles.headerIcon}>◈</Text></View>;
+ const Back=({label='돌아가기'}:{label?:string})=><Pressable style={{marginBottom:16}} onPress={()=>navigateBack()}><Text style={styles.link}>‹ {label}</Text></Pressable>;
  const Summary=({context}:{context:Json})=><View><View style={styles.infoRow}><Text style={styles.infoLabel}>참여자</Text><Text style={styles.infoValue}>{(context.participants||[]).join(', ')||'미입력'}</Text></View>{(context.rounds||[]).map((r:any,i:number)=><View key={i} style={styles.infoRow}><Text style={styles.infoLabel}>{r.round_number??i+1}차 참석</Text><Text style={styles.infoValue}>{(r.participant_names||[]).join(', ')||'확인 필요'}</Text></View>)}{(context.expenses||[]).map((e:any,i:number)=><View key={i} style={styles.summaryBox}><Text style={styles.subhead}>{i+1}번 결제 · {e.round_number?`${e.round_number}차`: '차수 미지정'}</Text><Text style={styles.cardAmount}>{money(e.total_amount)}</Text><Text style={styles.muted}>결제자: {e.payer_name||'확인 필요'}</Text>{(e.items||[]).map((item:any,j:number)=><Text key={j} style={styles.itemText}>· {item.name||'항목 미정'} {money(item.amount)}</Text>)}</View>)}{(context.direct_transfers||[]).map((t:any,i:number)=><View key={'direct'+i} style={styles.infoRow}><Text style={styles.infoLabel}>{t.from_participant} → {t.to_participant}</Text><Text style={styles.infoValue}>{money(t.amount)}</Text></View>)}{[['split_rules','분담 기준'],['exceptions','개인별 예외'],['contributions','찬조금']].map(([key,label])=>(context[key]||[]).length?<View key={key} style={styles.infoRow}><Text style={styles.infoLabel}>{label}</Text><Text style={styles.infoValue}>{context[key].length}건 · 상세 수정에서 확인</Text></View>:null)}</View>;
  const PaymentList=({d,calc}:{d:Session;calc:Calculation})=>{const paid=meta[d.session_id]?.paid||{};const senders=new Set(calc.result.settlements.map(t=>t.from_participant));const people=d.revisions[d.revisions.length-1].context.participants||[];return <View>{people.map((p:string)=><View key={p} style={styles.paymentRow}><View style={{flex:1}}><Text style={styles.personName}>{p}</Text><Text style={styles.muted}>{senders.has(p)?`보낼 금액 ${money(calc.result.settlements.filter(t=>t.from_participant===p).reduce((a,t)=>a+t.amount,0))}`:'보낼 금액 없음'}</Text></View><Text style={[styles.paidText,{color:paid[p]?C.green:C.orange}]}>{paid[p]?'확인':'미확인'}</Text><Switch value={!!paid[p]} onValueChange={v=>setLocal(d.session_id,{paid:{...paid,[p]:v}})} trackColor={{false:'#D7DDD7',true:'#8EC2A9'}} thumbColor={paid[p]?C.green:'#F7F8F6'}/></View>)}</View>};
  return <View style={{flex:1,backgroundColor:C.bg}}><StatusBar barStyle="dark-content" /><KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==='ios'?'padding':undefined}><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.container}><Header/>
@@ -188,9 +349,9 @@ export default function HomeScreen(){
  {page==='create'&&<><Back/><Text style={styles.eyebrow}>NEW SETTLEMENT</Text><Text style={styles.heroTitle}>새 정산 만들기</Text><Text style={styles.muted}>AI에 상황과 사진을 함께 전달하거나 직접 입력하세요.</Text><Panel title="정산 이름"><Field label="이름 (선택)" value={title} onChange={setTitle} placeholder="예: 동아리 회식"/></Panel><Panel title="입력 방식"><View style={styles.wrap}><Chip text="✦ AI 조건 입력" active={mode==='ai'} onPress={()=>setMode('ai')}/><Chip text="사용자 지정" active={mode==='custom'} onPress={()=>setMode('custom')}/></View></Panel>{mode==='ai'?<Panel title="AI 정산 분석"><Text style={styles.muted}>텍스트와 영수증·메모 사진을 함께 분석할 수 있어요. OCR 검수 단계는 없어요.</Text><Field label="정산 상황 (사진만 있어도 가능)" value={aiText} onChange={setAiText} multiline placeholder="민수가 식사비 6만원을 냈고 도윤은 술을 안 마셨어..."/><Button text={selectedImage?`✓ 사진 첨부됨 · 다른 사진 선택`:'＋ 영수증 / 메모 사진 첨부'} secondary onPress={chooseImage} disabled={busy}/>{selectedImage?<Text style={styles.success}>첨부 사진: {selectedImage.name}</Text>:null}<Button text={busy?'분석 중...':'AI로 조건 분석하기 →'} onPress={createAI} disabled={busy}/></Panel>:<><Panel title="정산 방식"><View style={styles.wrap}><Chip text="N분의 1 정산" active={manualKind==='equal'} onPress={()=>setManualKind('equal')}/><Chip text="차액 정산" active={manualKind==='diff'} onPress={()=>setManualKind('diff')}/></View></Panel><Panel title="정산 참여자"><View style={{flexDirection:'row',gap:8,alignItems:'center'}}><TextInput style={[styles.input,{flex:1}]} value={personEntry} onChangeText={setPersonEntry} placeholder="이름 입력" onSubmitEditing={addPerson}/><Pressable onPress={addPerson} style={[styles.btn,{marginTop:0,minWidth:48}]}><Text style={styles.btnText}>＋</Text></Pressable></View><View style={styles.wrap}>{manualPeople.map(p=><Pressable key={p} style={styles.addPill} onPress={()=>setManualPeople(v=>v.filter(x=>x!==p))}><Text style={styles.addPillText}>{p}  ×</Text></Pressable>)}</View></Panel><Panel title={manualKind==='equal'?'균등 정산 조건':'차액 정산 조건'}><Field label={manualKind==='diff'?'송금 총액 (원)':'총 지출액 (원)'} value={manualAmount} onChange={setManualAmount} numeric placeholder="90000"/><Field label="차수" value={manualRound} onChange={setManualRound} numeric/>{manualKind==='equal'?<><Field label="결제자" value={manualPayer} onChange={setManualPayer} placeholder="민수"/><Field label="항목" value={manualItem} onChange={setManualItem}/><Button text="기본 정산 조건 만들기 →" onPress={createCustom} disabled={busy}/><Text style={styles.helper}>차수별 참여, 비주류 제외, 찬조금은 다음 정산 조건 수정 화면에서 추가할 수 있어요.</Text><Button text="빈 양식으로 상세 입력" secondary onPress={createBlank} disabled={busy}/></>:<><Text style={styles.muted}>총액은 송금할 금액의 합계를 뜻해요. 누가 누구에게 얼마를 보내는지 입력하세요.</Text>{diffTransfers.map((t,i)=><View key={i} style={styles.arrayRow}><View style={styles.rowBetween}><Text style={styles.subhead}>송금 {i+1}</Text><Pressable onPress={()=>setDiffTransfers(v=>v.filter((_,j)=>j!==i))}><Text style={styles.deleteText}>삭제</Text></Pressable></View><Text style={styles.label}>보내는 사람</Text><View style={styles.wrap}>{manualPeople.map(p=><Chip key={'from'+p} text={p} active={t.from===p} onPress={()=>setDiffTransfers(v=>v.map((x,j)=>j===i?{...x,from:p}:x))}/>)}</View><Text style={styles.label}>받는 사람</Text><View style={styles.wrap}>{manualPeople.map(p=><Chip key={'to'+p} text={p} active={t.to===p} onPress={()=>setDiffTransfers(v=>v.map((x,j)=>j===i?{...x,to:p}:x))}/>)}</View><Field label="송금액 (원)" numeric value={t.amount} onChange={v=>setDiffTransfers(a=>a.map((x,j)=>j===i?{...x,amount:v}:x))}/></View>)}<Button text="＋ 송금 내역 추가" secondary onPress={()=>setDiffTransfers(v=>[...v,{from:'',to:'',amount:''}])}/><Text style={{fontWeight:'800',color:diffValid?'#2563EB':'#DC2626'}}>{diffValid?'금액이 일치해요!':'총액과 정산 금액이 불일치해요!'}</Text><Text style={styles.muted}>송금액 합계: {money(diffTotal)}</Text><Button text="정산 시작 · 금액 계산 →" disabled={!diffValid} onPress={createDiff}/></>}</Panel></>}</>}
 
 
- {page==='review'&&doc&&<><Back/><Text style={styles.eyebrow}>REVIEW BEFORE SETTLEMENT</Text><Text style={styles.heroTitle}>조건을 확인해 주세요</Text><Text style={styles.muted}>AI가 추출했더라도 금액·인원·예외는 직접 확인해야 해요.</Text><Panel title="정산 조건 요약"><Summary context={ctx}/><Text style={styles.muted}>입력 버전 {rev?.input_revision}</Text><Button text="✎ 정산 조건 수정" onPress={()=>setPage('edit')}/></Panel><Panel title="원문 및 확인이 필요한 부분"><Text style={styles.sourceText}>{doc.source_text}</Text>{doc.supplied_evidence?<Text style={styles.sourceText}>{doc.supplied_evidence}</Text>:null}{issues.length?issues.map((x,i)=><Text key={i} style={styles.issue}>⚠ {x.question} ({x.path})</Text>):<Text style={styles.success}>자동 검토에서 미해결 항목을 찾지 못했어요. 실제 조건은 직접 확인하세요.</Text>}</Panel><View style={{marginTop:18}}><Button text={busy?'계산 중...':'정산 시작 · 금액 계산 →'} disabled={busy||!!issues.length} onPress={begin}/><Text style={styles.helper}>버튼을 누르면 표시된 정산 조건을 확인한 것으로 기록하고 계산합니다. 실제 송금은 자동으로 수행하지 않아요.</Text></View></>}
+ {page==='review'&&doc&&<><Back/><Text style={styles.eyebrow}>REVIEW BEFORE SETTLEMENT</Text><Text style={styles.heroTitle}>조건을 확인해 주세요</Text><Text style={styles.muted}>AI가 추출했더라도 금액·인원·예외는 직접 확인해야 해요.</Text><Panel title="정산 조건 요약"><Summary context={ctx}/><Text style={styles.muted}>입력 버전 {rev?.input_revision}</Text><Button text="✎ 정산 조건 수정" onPress={()=>setPage('edit')}/></Panel><Panel title="원문 및 확인이 필요한 부분"><Text style={styles.sourceText}>{doc.source_text}</Text>{doc.supplied_evidence?<Text style={styles.sourceText}>{doc.supplied_evidence}</Text>:null}{issues.length?issues.map((x,i)=><Text key={i} style={styles.issue}>⚠ {x.question} {typeof x.path==='string'&&x.path.startsWith('split_rules[')?'· 분담 규칙을 확인해 주세요.':typeof x.path==='string'&&x.path.startsWith('expenses[')?'· 결제 항목을 확인해 주세요.':''} ({x.path})</Text>):<Text style={styles.success}>자동 검토에서 미해결 항목을 찾지 못했어요. 실제 조건은 직접 확인하세요.</Text>}</Panel><View style={{marginTop:18}}><Button text={busy?'계산 중...':'정산 시작 · 금액 계산 →'} disabled={busy||!!issues.length} onPress={begin}/><Text style={styles.helper}>버튼을 누르면 표시된 정산 조건을 확인한 것으로 기록하고 계산합니다. 실제 송금은 자동으로 수행하지 않아요.</Text></View></>}
  {page==='edit'&&doc&&draft&&<><Back label="검수 화면으로"/><Text style={styles.eyebrow}>CUSTOM EDITOR</Text><Text style={styles.heroTitle}>정산 조건 수정</Text><Text style={styles.muted}>참여자, 차수, 항목, 분담 기준, 예외, 찬조금을 직접 수정할 수 있어요.</Text><Panel title="정산 조건 편집"><FriendlyEditor value={draft} onChange={v=>{setDraft(v);setDirty(true);}}/><Button text={showAdvanced?'고급 조건 편집 닫기':'예외 · 찬조 · 고급 조건 편집'} secondary onPress={()=>setShowAdvanced(v=>!v)}/>{showAdvanced&&(schema?<SchemaEditor schema={schema} value={draft} onChange={v=>{setDraft(v);setDirty(true);}}/>:<Text style={styles.issue}>서버의 /api/schema를 불러오지 못했어요. 네트워크를 확인해 주세요.</Text>)}<Text style={styles.helper}>결제 번호와 항목 번호는 0부터 시작합니다. 항목을 삭제했다면 참조 번호도 다시 확인하세요.</Text><Button text={busy?'저장 중...':'수정 내용 저장 · 다시 검수 →'} disabled={busy||!dirty} onPress={saveEdit}/></Panel></>}
- {page==='detail'&&doc&&<><Back/><Text style={styles.eyebrow}>ACTIVE SETTLEMENT</Text><Text style={styles.heroTitle}>{meta[doc.session_id]?.title||'진행 중인 정산'}</Text><Text style={styles.muted}>입금 상태를 직접 대조하고 토글로 기록하세요.</Text><Panel title="정산 개요"><Summary context={ctx}/><Text style={styles.cardAmount}>{money(localDiffs[doc.session_id]?ctx.transfer_total:total(doc))}</Text>{!localDiffs[doc.session_id]&&<Button text="조건 다시 검토·수정" secondary onPress={()=>setPage('review')}/>}</Panel>{calculation?<><Panel title="참여자별 입금 확인"><PaymentList d={doc} calc={calculation}/><Text style={styles.helper}>이 토글은 담당자가 직접 확인한 상태이며 실제 은행 입금을 자동 조회하지 않습니다.</Text></Panel><Panel title="송금 내역">{calculation.result.settlements.length?calculation.result.settlements.map((t,i)=><View key={i} style={styles.paymentRow}><Text style={{flex:1,color:C.ink}}>{t.from_participant} → {t.to_participant}</Text><Text style={styles.personName}>{money(t.amount)}</Text></View>):<Text style={styles.muted}>송금할 금액이 없습니다.</Text>}<Button text="송금 안내 공유" secondary onPress={share}/></Panel></>:<Panel title="정산 진행 전"><Text style={styles.muted}>아직 계산이 완료되지 않았어요.</Text><Button text="검수하고 계산하기" onPress={()=>setPage('review')}/></Panel>}<Panel title="정산 관리"><Field label="정산명" value={meta[doc.session_id]?.title||''} onChange={v=>setLocal(doc.session_id,{title:v})} placeholder="정산명 입력"/><Button text="정산 삭제" secondary danger onPress={deleteSession}/></Panel></>}
+ {page==='detail'&&doc&&<><Back label="홈으로"/><Text style={styles.eyebrow}>ACTIVE SETTLEMENT</Text><Text style={styles.heroTitle}>{meta[doc.session_id]?.title||'진행 중인 정산'}</Text><Text style={styles.muted}>입금 상태를 직접 대조하고 토글로 기록하세요.</Text><Panel title="정산 개요"><Summary context={ctx}/><Text style={styles.cardAmount}>{money(localDiffs[doc.session_id]?ctx.transfer_total:total(doc))}</Text>{!localDiffs[doc.session_id]&&<Button text="조건 다시 검토·수정" secondary onPress={()=>setPage('review')}/>}</Panel>{calculation?<><Panel title="참여자별 입금 확인"><PaymentList d={doc} calc={calculation}/><Text style={styles.helper}>이 토글은 담당자가 직접 확인한 상태이며 실제 은행 입금을 자동 조회하지 않습니다.</Text></Panel><Panel title="송금 내역">{calculation.result.settlements.length?groupedTransfers(calculation.result.settlements).map((t,i)=><View key={i} style={styles.paymentRow}><Text style={{flex:1,color:C.ink}}>{t.from_participant} → {t.to_participant}</Text><Text style={styles.personName}>{money(t.amount)}</Text></View>):<Text style={styles.muted}>송금할 금액이 없습니다.</Text>}<Button text="송금 안내 공유" secondary onPress={share}/></Panel></>:<Panel title="정산 진행 전"><Text style={styles.muted}>아직 계산이 완료되지 않았어요.</Text><Button text="검수하고 계산하기" onPress={()=>setPage('review')}/></Panel>}<Panel title="정산 관리"><Field label="정산명" value={meta[doc.session_id]?.title||''} onChange={v=>setLocal(doc.session_id,{title:v})} placeholder="정산명 입력"/><Button text="정산 삭제" secondary danger onPress={deleteSession}/></Panel></>}
  </ScrollView></KeyboardAvoidingView>{splash&&<View style={styles.splash}><Text style={styles.splashMark}>모</Text><Text style={styles.splashName}>모아정산</Text><Text style={styles.logoSub}>함께 쓴 돈, 함께 확인</Text></View>}{busy&&<View style={styles.loading}><ActivityIndicator size="large" color={C.green}/><Text style={{color:C.ink,marginTop:10}}>처리 중...</Text></View>}</View>;
 }
-const styles=StyleSheet.create({container:{paddingHorizontal:20,paddingTop:44,paddingBottom:90,maxWidth:720,width:'100%',alignSelf:'center'},header:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:34},logo:{fontSize:26,fontWeight:'900',letterSpacing:-1.2,color:C.ink},logoSub:{color:C.muted,fontSize:12,marginTop:2},headerIcon:{fontSize:26,color:C.green},hero:{marginBottom:26},eyebrow:{color:C.green,fontSize:12,fontWeight:'800',letterSpacing:2,marginBottom:12},heroTitle:{fontSize:34,lineHeight:43,fontWeight:'900',color:C.ink,letterSpacing:-1.4,marginBottom:12},muted:{color:C.muted,fontSize:13,lineHeight:21},sectionTitle:{color:C.ink,fontWeight:'800',fontSize:20},rowBetween:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:14},board:{flexDirection:'row',flexWrap:'wrap',justifyContent:'space-between',gap:12},boardTile:{width:'48%',minHeight:174,borderRadius:19,backgroundColor:C.white,borderColor:C.line,borderWidth:1,padding:17,justifyContent:'space-between'},tileNumber:{fontSize:12,color:C.green,fontWeight:'800'},tilePrice:{fontSize:20,fontWeight:'900',color:C.ink,marginTop:7},tilePayments:{borderTopWidth:1,borderTopColor:C.line,paddingTop:6,marginTop:7},tilePayRow:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',minHeight:30},tilePerson:{color:C.muted,fontSize:12,flex:1},tileTitle:{fontSize:18,fontWeight:'800',color:C.ink,marginTop:12},tileHint:{fontSize:11,color:C.muted},tileBadge:{alignSelf:'flex-start',color:C.green,backgroundColor:C.greenSoft,paddingHorizontal:9,paddingVertical:4,overflow:'hidden',borderRadius:20,fontSize:11,fontWeight:'700'},addTile:{backgroundColor:'#ECF3ED',borderStyle:'dashed',borderColor:'#A8C3B4',alignItems:'center',justifyContent:'center'},addIcon:{fontSize:36,color:C.green},addTitle:{fontSize:17,color:C.green,fontWeight:'800'},helper:{color:C.muted,fontSize:12,lineHeight:20,marginTop:12},panel:{backgroundColor:C.white,borderColor:C.line,borderWidth:1,borderRadius:20,padding:19,marginTop:18,marginBottom:2,gap:13},panelTitle:{fontSize:19,color:C.ink,fontWeight:'800',marginBottom:3},field:{gap:7,marginTop:5},label:{fontSize:13,color:'#4B6259',fontWeight:'700'},input:{backgroundColor:'#FCFDFC',borderWidth:1,borderColor:'#CDDCD0',borderRadius:11,paddingVertical:12,paddingHorizontal:13,fontSize:15,color:C.ink,minHeight:47},btn:{backgroundColor:C.green,borderRadius:12,minHeight:49,alignItems:'center',justifyContent:'center',paddingHorizontal:16,paddingVertical:10,marginTop:5},btnSecondary:{backgroundColor:C.white,borderWidth:1,borderColor:'#C8D9CD'},btnSmall:{minHeight:37,alignSelf:'flex-start'},btnDanger:{borderColor:'#E5B8B8'},btnText:{fontWeight:'800',fontSize:15,color:'#FFF'},wrap:{flexDirection:'row',flexWrap:'wrap',gap:8,marginTop:7},chip:{borderRadius:12,borderWidth:1,borderColor:C.line,backgroundColor:C.white,paddingHorizontal:13,paddingVertical:10},chipActive:{backgroundColor:C.green,borderColor:C.green},chipText:{fontSize:13,fontWeight:'700',color:C.ink},divider:{height:1,backgroundColor:C.line,marginVertical:7},subhead:{fontSize:14,fontWeight:'800',color:C.ink},sourceText:{color:C.ink,fontSize:13,lineHeight:21,backgroundColor:C.bg,borderRadius:11,padding:13},infoRow:{flexDirection:'row',justifyContent:'space-between',gap:10,paddingVertical:8,borderBottomColor:C.line,borderBottomWidth:1},infoLabel:{color:C.muted,fontSize:13,flex:1},infoValue:{color:C.ink,fontWeight:'600',fontSize:13,flex:2,textAlign:'right'},summaryBox:{backgroundColor:C.bg,borderRadius:12,padding:13,gap:5,marginVertical:7},cardAmount:{fontSize:24,color:C.ink,fontWeight:'900'},itemText:{color:C.muted,fontSize:13},issue:{backgroundColor:C.orangeSoft,color:C.orange,borderRadius:9,padding:12,fontSize:13,lineHeight:20},success:{color:C.green,backgroundColor:C.greenSoft,padding:12,borderRadius:10,fontSize:13},paymentRow:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:11,borderBottomColor:C.line,borderBottomWidth:1,gap:8},personName:{color:C.ink,fontWeight:'800',fontSize:15},paidText:{fontSize:12,fontWeight:'800'},link:{color:C.green,fontWeight:'800',fontSize:13},notice:{backgroundColor:C.greenSoft,padding:13,borderRadius:12,color:C.ink,marginBottom:12},editorGroup:{borderWidth:1,borderColor:C.line,borderRadius:12,padding:12,marginTop:9,gap:8},groupTitle:{color:C.ink,fontSize:15,fontWeight:'800',marginBottom:5},arrayRow:{borderWidth:1,borderColor:C.line,borderRadius:12,padding:10,marginVertical:5,gap:6},deleteText:{color:'#A34C4C',fontWeight:'800',fontSize:13},addPill:{borderWidth:1,borderColor:'#BFD4C6',borderRadius:10,paddingHorizontal:10,paddingVertical:8},addPillText:{fontSize:12,color:C.green,fontWeight:'700'},splash:{position:'absolute',top:0,left:0,right:0,bottom:0,backgroundColor:C.bg,alignItems:'center',justifyContent:'center'},splashMark:{fontSize:50,color:'#FFF',backgroundColor:C.green,borderRadius:28,overflow:'hidden',paddingHorizontal:30,paddingVertical:14,fontWeight:'900'},splashName:{fontSize:33,fontWeight:'900',color:C.ink,marginTop:22,marginBottom:5},loading:{position:'absolute',top:0,left:0,right:0,bottom:0,backgroundColor:'#F5F7F3CC',alignItems:'center',justifyContent:'center'}});
+const styles=StyleSheet.create({previewHeader:{marginTop:9,padding:11,borderRadius:10,backgroundColor:C.greenSoft,flexDirection:'row',alignItems:'center',justifyContent:'space-between'},previewTitle:{fontWeight:'800',fontSize:13,color:C.green},previewBody:{padding:10,borderWidth:1,borderColor:C.line,borderRadius:10,gap:5},container:{paddingHorizontal:20,paddingTop:44,paddingBottom:90,maxWidth:720,width:'100%',alignSelf:'center'},header:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:34},logo:{fontSize:26,fontWeight:'900',letterSpacing:-1.2,color:C.ink},logoSub:{color:C.muted,fontSize:12,marginTop:2},headerIcon:{fontSize:26,color:C.green},hero:{marginBottom:26},eyebrow:{color:C.green,fontSize:12,fontWeight:'800',letterSpacing:2,marginBottom:12},heroTitle:{fontSize:34,lineHeight:43,fontWeight:'900',color:C.ink,letterSpacing:-1.4,marginBottom:12},muted:{color:C.muted,fontSize:13,lineHeight:21},sectionTitle:{color:C.ink,fontWeight:'800',fontSize:20},rowBetween:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:14},board:{flexDirection:'row',flexWrap:'wrap',justifyContent:'space-between',gap:12},boardTile:{width:'48%',minHeight:174,borderRadius:19,backgroundColor:C.white,borderColor:C.line,borderWidth:1,padding:17,justifyContent:'space-between'},tileNumber:{fontSize:12,color:C.green,fontWeight:'800'},tilePrice:{fontSize:20,fontWeight:'900',color:C.ink,marginTop:7},tilePayments:{borderTopWidth:1,borderTopColor:C.line,paddingTop:6,marginTop:7},tilePayRow:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',minHeight:30},tilePerson:{color:C.muted,fontSize:12,flex:1},tileTitle:{fontSize:18,fontWeight:'800',color:C.ink,marginTop:12},tileHint:{fontSize:11,color:C.muted},tileBadge:{alignSelf:'flex-start',color:C.green,backgroundColor:C.greenSoft,paddingHorizontal:9,paddingVertical:4,overflow:'hidden',borderRadius:20,fontSize:11,fontWeight:'700'},addTile:{backgroundColor:'#ECF3ED',borderStyle:'dashed',borderColor:'#A8C3B4',alignItems:'center',justifyContent:'center'},addIcon:{fontSize:36,color:C.green},addTitle:{fontSize:17,color:C.green,fontWeight:'800'},helper:{color:C.muted,fontSize:12,lineHeight:20,marginTop:12},panel:{backgroundColor:C.white,borderColor:C.line,borderWidth:1,borderRadius:20,padding:19,marginTop:18,marginBottom:2,gap:13},panelTitle:{fontSize:19,color:C.ink,fontWeight:'800',marginBottom:3},field:{gap:7,marginTop:5},label:{fontSize:13,color:'#4B6259',fontWeight:'700'},input:{backgroundColor:'#FCFDFC',borderWidth:1,borderColor:'#CDDCD0',borderRadius:11,paddingVertical:12,paddingHorizontal:13,fontSize:15,color:C.ink,minHeight:47},btn:{backgroundColor:C.green,borderRadius:12,minHeight:49,alignItems:'center',justifyContent:'center',paddingHorizontal:16,paddingVertical:10,marginTop:5},btnSecondary:{backgroundColor:C.white,borderWidth:1,borderColor:'#C8D9CD'},btnSmall:{minHeight:37,alignSelf:'flex-start'},btnDanger:{borderColor:'#E5B8B8'},btnText:{fontWeight:'800',fontSize:15,color:'#FFF'},wrap:{flexDirection:'row',flexWrap:'wrap',gap:8,marginTop:7},chip:{borderRadius:12,borderWidth:1,borderColor:C.line,backgroundColor:C.white,paddingHorizontal:13,paddingVertical:10},chipActive:{backgroundColor:C.green,borderColor:C.green},chipText:{fontSize:13,fontWeight:'700',color:C.ink},divider:{height:1,backgroundColor:C.line,marginVertical:7},subhead:{fontSize:14,fontWeight:'800',color:C.ink},sourceText:{color:C.ink,fontSize:13,lineHeight:21,backgroundColor:C.bg,borderRadius:11,padding:13},infoRow:{flexDirection:'row',justifyContent:'space-between',gap:10,paddingVertical:8,borderBottomColor:C.line,borderBottomWidth:1},infoLabel:{color:C.muted,fontSize:13,flex:1},infoValue:{color:C.ink,fontWeight:'600',fontSize:13,flex:2,textAlign:'right'},summaryBox:{backgroundColor:C.bg,borderRadius:12,padding:13,gap:5,marginVertical:7},cardAmount:{fontSize:24,color:C.ink,fontWeight:'900'},itemText:{color:C.muted,fontSize:13},issue:{backgroundColor:C.orangeSoft,color:C.orange,borderRadius:9,padding:12,fontSize:13,lineHeight:20},success:{color:C.green,backgroundColor:C.greenSoft,padding:12,borderRadius:10,fontSize:13},paymentRow:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:11,borderBottomColor:C.line,borderBottomWidth:1,gap:8},personName:{color:C.ink,fontWeight:'800',fontSize:15},paidText:{fontSize:12,fontWeight:'800'},link:{color:C.green,fontWeight:'800',fontSize:13},notice:{backgroundColor:C.greenSoft,padding:13,borderRadius:12,color:C.ink,marginBottom:12},editorGroup:{borderWidth:1,borderColor:C.line,borderRadius:12,padding:12,marginTop:9,gap:8},groupTitle:{color:C.ink,fontSize:15,fontWeight:'800',marginBottom:5},arrayRow:{borderWidth:1,borderColor:C.line,borderRadius:12,padding:10,marginVertical:5,gap:6},deleteText:{color:'#A34C4C',fontWeight:'800',fontSize:13},addPill:{borderWidth:1,borderColor:'#BFD4C6',borderRadius:10,paddingHorizontal:10,paddingVertical:8},addPillText:{fontSize:12,color:C.green,fontWeight:'700'},splash:{position:'absolute',top:0,left:0,right:0,bottom:0,backgroundColor:C.bg,alignItems:'center',justifyContent:'center'},splashMark:{fontSize:50,color:'#FFF',backgroundColor:C.green,borderRadius:28,overflow:'hidden',paddingHorizontal:30,paddingVertical:14,fontWeight:'900'},splashName:{fontSize:33,fontWeight:'900',color:C.ink,marginTop:22,marginBottom:5},loading:{position:'absolute',top:0,left:0,right:0,bottom:0,backgroundColor:'#F5F7F3CC',alignItems:'center',justifyContent:'center'}});

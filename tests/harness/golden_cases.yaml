@@ -132,7 +132,7 @@ cases:
     must_preserve_input: true
     note: 한 잔이라는 사실만으로 대상 항목·제외·합의액을 확정하지 않는다.
 
-  # G07 | 경계 — 원 단위 나머지 부담자 미정
+  # G07 | 경계 — 원 단위 나머지 자동 배분
   - id: G07
     name: unassigned_remainder
     category: boundary
@@ -143,11 +143,10 @@ cases:
         - {total_amount: 10000, payer_name: A, items: [{name: 식사비, amount: 10000}]}
       split_rules:
         - {expense_index: 0, item_index: 0, method: equal, participant_names: [A, B, C]}
-    expect_issue_count: 1
-    expect_issue_keys:
-      - {code: unresolved_rounding, path: "expenses[0].items[0]"}
+    expect_issue_count: 0
+    expect_issue_keys: []
     must_preserve_input: true
-    note: 10000을 3명에게 균등 분담하면 원 단위 나머지가 생긴다. 이 함수는 부담자를 정하지 않는다.
+    note: 10000을 3명에게 균등 분담할 때 나머지 1원은 계산 엔진이 첫 유효 분담자에게 자동 배정한다.
 
   # G08 | 금지 행동 — 이유 메모의 지시문 실행 금지
   - id: G08
