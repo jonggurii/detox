@@ -12,7 +12,14 @@ const BASE = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/$/, '');
 export const apiBase = () => BASE;
 export async function request<T>(path:string, method='GET', body?:unknown):Promise<T>{
   if(!BASE) throw new Error('mobile/.env에 EXPO_PUBLIC_API_URL=http://PC_IP:8000을 설정하세요.');
-  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),60000);
+  const timeoutMs =
+    path === '/api/receipts/multimodal-confirm' ||
+    path === '/api/sessions'
+      ? 180000
+      : 60000;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response=await fetch(BASE+path,{method,headers:body===undefined?undefined:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal});
     const text=await response.text(); let data:any=text;

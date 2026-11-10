@@ -5,6 +5,7 @@ from contextlib import closing
 import json
 import os
 import sqlite3
+import logging
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -25,6 +26,7 @@ from backend.multimodal_router import make_multimodal_router
 from fastapi.middleware.cors import CORSMiddleware
 
 ROOT = Path(__file__).resolve().parent
+logger = logging.getLogger("uvicorn.error")
 
 
 class Body(BaseModel):
@@ -90,11 +92,7 @@ def create_app(db_path=None, parser=None, ocr=None):
 
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=[
-        "localhost",
-        "127.0.0.1",
-        "172.16.51.140",
-    ],
+        allowed_hosts=allowed_hosts,
     )
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
     parse = parser or parse_and_review
@@ -124,8 +122,26 @@ def create_app(db_path=None, parser=None, ocr=None):
         return JSONResponse({"detail": "추출 형식을 확인하지 못했습니다. 직접 입력을 이용해 주세요."}, status_code=422)
 
     @app.exception_handler(ParserError)
-    async def parser_error(request, exc):
-        return JSONResponse({"detail": "AI 호출을 완료하지 못했습니다. 서버의 모델·키 설정을 확인하거나 직접 입력해 주세요."}, status_code=503)
+    async def parser_error(request: Request, exc: ParserError):
+        logger.error(
+            "Parser failed: endpoint=%s, type=%s, message=%s",
+            request.url.path,
+            type(exc).__name__,
+            str(exc),
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": (
+                    "AI 분석에 실패했습니다. "
+                    "입력한 내용은 유지되며 잠시 후 재시도할 수 있습니다."
+                ),
+                "code": "parser_unavailable",
+                "error_type": type(exc).__name__,
+            },
+        )
 
     def require_session(sid):
         try:

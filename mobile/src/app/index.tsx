@@ -233,6 +233,9 @@ const [imageItems, setImageItems] =
 const [imageTotal, setImageTotal] = useState('');
 
 const [imageNotes, setImageNotes] = useState('');
+ const [issueSelections,setIssueSelections]=useState<Record<string,string>>({});
+ const [sourceEditing,setSourceEditing]=useState(false);
+ const [sourceEvidence,setSourceEvidence]=useState<string|null>(null);
  const [manualPayer,setManualPayer]=useState('');const [manualItem,setManualItem]=useState('식사비');const [manualAmount,setManualAmount]=useState('');const [manualRound,setManualRound]=useState('1');
   const [reminderOpenKey,setReminderOpenKey]=useState<string|null>(null);
  const [paymentFilter,setPaymentFilter]=useState<PaymentFilter>('all');const [showAdvanced,setShowAdvanced]=useState(false);const [menuSid,setMenuSid]=useState<string|null>(null);const [checks,setChecks]=useState<Record<string,boolean>>({});const [reviewer,setReviewer]=useState('');const [reviewNote,setReviewNote]=useState('조건 확인 완료');
@@ -316,11 +319,30 @@ const [imageNotes, setImageNotes] = useState('');
   return()=>subscription.remove();
  },[]);
  const rev=doc?.revisions?.[doc.revisions.length-1];const ctx=rev?.context||{};const issues=rev?.issues||[];
+ // 같은 찬조금의 '적용 항목 누락' 오류만 화면에서 하나로 합친다.
+ // 원본 issues는 그대로 유지하여 미해결 오류가 정산 시작을 차단하도록 한다.
+ const visibleIssues=issues.filter((issue:any,index:number,all:any[])=>{
+  const path=String(issue.path||'');
+  const contributionMatch=path.match(/^contributions\[(\d+)\]/);
+  const missingUses=contributionMatch&&(issue.code==='missing_contribution_uses'||path.includes('.uses'));
+  const identity=missingUses
+   ? `contribution-uses:${contributionMatch[1]}`
+   : `exact:${String(issue.code||'')}:${path}:${String(issue.question||issue.message||issue.reason||'')}`;
+  return all.findIndex((other:any)=>{
+   const otherPath=String(other.path||'');
+   const otherMatch=otherPath.match(/^contributions\[(\d+)\]/);
+   const otherMissing=otherMatch&&(other.code==='missing_contribution_uses'||otherPath.includes('.uses'));
+   const otherIdentity=otherMissing
+    ? `contribution-uses:${otherMatch[1]}`
+    : `exact:${String(other.code||'')}:${otherPath}:${String(other.question||other.message||other.reason||'')}`;
+   return identity===otherIdentity;
+  })===index;
+ });
  const active=[...history,...Object.values(localDiffs).map(x=>({session_id:x.session.session_id,title:meta[x.session.session_id]?.title||'차액 정산'}))].filter(s=>!meta[s.session_id]?.deleted);
  const total=(d:Session)=>{const c=d.revisions[d.revisions.length-1].context;return (c.expenses||[]).reduce((sum:number,e:any)=>sum+(Number(e.total_amount)||0),0)};
  const lastCalculation=(d:Session)=>[...(d.calculations||[])].reverse().find(c=>c.input_revision===d.revisions[d.revisions.length-1].input_revision)||null;
  const load=useCallback((d:Session,target:Page='review')=>{
-  setDoc(d);setDraft(clone(d.revisions[d.revisions.length-1].context));setDirty(false);setChecks({});setReviewer('');setReviewNote('조건 확인 완료');setCalculation(lastCalculation(d));setPaymentFilter('all');setReminderOpenKey(null);setPage(target);
+  setDoc(d);setDraft(clone(d.revisions[d.revisions.length-1].context));setDirty(false);setChecks({});setReviewer('');setReviewNote('조건 확인 완료');setCalculation(lastCalculation(d));setPaymentFilter('all');setReminderOpenKey(null);setIssueSelections({});setPage(target);
   const revision=d.revisions[d.revisions.length-1].input_revision;
   AsyncStorage.getItem(EDIT_DRAFT_STORAGE).then(raw=>{
    if(!raw)return;
@@ -352,7 +374,7 @@ const [imageNotes, setImageNotes] = useState('');
  const run=async(fn:()=>Promise<void>)=>{if(busyLock.current)return;busyLock.current=true;setBusy(true);try{await fn();}catch(e:any){Alert.alert('확인해 주세요',String(e?.message||e));}finally{busyLock.current=false;setBusy(false);}};
  const setLocal=(sid:string,patch:Partial<LocalMeta>)=>setMeta(prev=>({...prev,[sid]:{...prev[sid],...patch}}));
  const startNew=()=>{
-  const fresh=()=>{setDoc(null);setDraft(null);setCalculation(null);setTitle('');setAiText('');setSelectedImage(null);setImagePreview(null);setManualPeople([]);setPersonEntry('');setDiffTransfers([{from:'',to:'',amount:''}]);setManualKind('equal');setMode('ai');setManualPayer('');setManualItem('식사비');setManualAmount('');setManualRound('1');setMessage('');setCreateDraftEnabled(true);setPage('create');};
+  const fresh=()=>{setDoc(null);setDraft(null);setCalculation(null);setTitle('');setAiText('');setSelectedImage(null);setImagePreview(null);setManualPeople([]);setPersonEntry('');setDiffTransfers([{from:'',to:'',amount:''}]);setManualKind('equal');setMode('ai');setManualPayer('');setManualItem('식사비');setManualAmount('');setManualRound('1');setMessage('');setSourceEditing(false);setSourceEvidence(null);setCreateDraftEnabled(true);setPage('create');};
   AsyncStorage.getItem(CREATE_DRAFT_STORAGE).then(raw=>{
    if(!raw){fresh();return;}
    try{
@@ -366,6 +388,11 @@ const [imageNotes, setImageNotes] = useState('');
  };
  const afterCreate=async(d:Session)=>{if(title.trim())setLocal(d.session_id,{title:title.trim()});setCreateDraftEnabled(false);clearCreateDraft();load(d,'review');await refresh();setMessage('추출된 조건을 확인한 뒤 정산을 시작하세요.');};
  const createAI=()=>run(async()=>{
+  if(sourceEditing){
+   if(!aiText.trim())throw new Error('정산 상황을 입력해 주세요.');
+   const d=sourceEvidence?await confirmImage(aiText.trim(),sourceEvidence):await sessionApi.ai(aiText.trim());
+   setSourceEditing(false);setSourceEvidence(null);await afterCreate(d);return;
+  }
   if(!aiText.trim()&&!selectedImage)throw new Error('정산 상황이나 사진을 입력해 주세요.');
   if(!selectedImage){await afterCreate(await sessionApi.ai(aiText.trim()));return;}
   const result=await previewImage(selectedImage,aiText.trim());
@@ -386,6 +413,155 @@ const [imageNotes, setImageNotes] = useState('');
   await afterCreate(await confirmImage(aiText.trim(),evidence));
   setImagePreview(null);
  });
+ // 기존 원문과 검수된 영수증 증거를 보존한 채 다시 자연어 분석할 수 있다.
+ const returnToOriginal=()=>{
+  if(!doc)return;
+  setAiText(doc.source_text||aiText);
+  setSourceEvidence(doc.supplied_evidence||null);
+  setMode('ai');setSourceEditing(true);setCreateDraftEnabled(true);
+  setPage('create');
+ };
+ const issueIndex=(path:string,section:string)=>{
+  const match=path.match(new RegExp('^'+section+'\\[(\\d+)\\]'));
+  return match?Number(match[1]):-1;
+ };
+ const itemChoices=(expenseIndex:number)=>{
+  const expense=ctx.expenses?.[expenseIndex];
+  return Array.isArray(expense?.items)?expense.items.map((it:any,i:number)=>({index:i,name:String(it.name||`항목 ${i+1}`),amount:Number(it.amount)||0})):[];
+ };
+ const resolveIssue=(issue:any,choice:string)=>run(async()=>{
+  if(!doc||!rev)return;
+  const next=clone(ctx);
+  const path=String(issue.path||'');
+  const ci=issueIndex(path,'contributions');
+  const ri=issueIndex(path,'split_rules');
+  const xi=issueIndex(path,'exceptions');
+  if(xi>=0){
+   const ex=next.exceptions?.[xi];
+   if(!ex)throw new Error('예외 조건을 찾지 못했어요. 직접 수정해 주세요.');
+   if(choice==='remove-exception'){
+    next.exceptions=next.exceptions.filter((_:any,i:number)=>i!==xi);
+   }else if(choice==='apply-exclude'){
+    const ei=Number(ex.expense_index),ii=Number(ex.item_index);
+    const person=String(ex.participant_name||'');
+    const rule=next.split_rules?.find((r:any)=>r.expense_index===ei&&r.item_index===ii);
+    if(ex.kind!=='exclude'||!person||!rule||!Array.isArray(rule.participant_names))throw new Error('제외 대상이나 항목이 불명확해요. 직접 조건을 수정해 주세요.');
+    rule.participant_names=rule.participant_names.filter((n:string)=>n!==person);
+    next.exceptions=next.exceptions.filter((_:any,i:number)=>i!==xi);
+    if(rule.remainder_payer_name===person)delete rule.remainder_payer_name;
+    if(Array.isArray(rule.individual_amounts))rule.individual_amounts=rule.individual_amounts.filter((x:any)=>x.participant_name!==person);
+    if(!rule.participant_names.length)throw new Error('제외 후 분담자가 남지 않아요. 직접 수정해 주세요.');
+   }else{setPage('edit');return;}
+  }else if(ci>=0){
+   const contribution=next.contributions?.[ci];
+   if(!contribution)throw new Error('찬조금 정보를 찾을 수 없습니다.');
+   const amount=Number(contribution.amount);
+   const ei=Number(contribution.expense_index);
+   const items=itemChoices(ei);
+   if(!Number.isSafeInteger(amount)||amount<=0||!items.length)throw new Error('찬조금 금액 또는 적용 항목을 먼저 확인해 주세요.');
+   let uses:Array<{item_index:number;amount:number}>=[];
+   if(choice==='all'){
+    const total=items.reduce((sum,x)=>sum+x.amount,0);
+    if(total<amount)throw new Error('찬조금이 대상 항목 총액보다 큽니다.');
+    let left=amount;
+    uses=items.filter(x=>x.amount>0).map((x,i,arr)=>{
+     const value=i===arr.length-1?left:Math.floor(amount*x.amount/total);
+     left-=value;return {item_index:x.index,amount:value};
+    }).filter(x=>x.amount>0);
+   }else if(choice.startsWith('item:')){
+    const idx=Number(choice.slice(5));const target=items.find(x=>x.index===idx);
+    if(!target||target.amount<amount)throw new Error('선택한 항목의 금액보다 찬조금이 큽니다.');
+    uses=[{item_index:idx,amount}];
+   }else{setPage('edit');return;}
+   contribution.uses=uses;
+   // 전달/약속 상태는 임의로 확정하지 않는다. 누락 시 사용자가 추가 확인해야 한다.
+  }else if(ri>=0){
+   const rule=next.split_rules?.[ri];
+   if(!rule)throw new Error('분담 기준을 찾을 수 없습니다.');
+   if(choice==='equal-all'){
+    const names=next.rounds?.find((r:any)=>r.round_number===next.expenses?.[rule.expense_index]?.round_number)?.participant_names||next.participants||[];
+    if(!names.length)throw new Error('참여자 명단을 먼저 확인해 주세요.');
+    rule.method='equal';rule.participant_names=[...names];rule.individual_amounts=[];
+    rule.basis_note='사용자가 확인 화면에서 해당 차수 참여자 균등 분담으로 지정함';
+   }else{setPage('edit');return;}
+  }else{setPage('edit');return;}
+  const updated=await sessionApi.edit(doc.session_id,rev.input_revision,next);
+  load(updated,'review');await refresh();
+  setMessage('선택한 내용을 저장했어요. 남은 확인 사항을 검토해 주세요.');
+ });
+ const describeIssue=(issue:any)=>{
+  const path=String(issue.path||'');
+  const code=String(issue.code||'');
+  const raw=String(issue.question||issue.message||issue.reason||'').trim();
+  const ci=issueIndex(path,'contributions');
+  const ri=issueIndex(path,'split_rules');
+  const ei=issueIndex(path,'expenses');
+  const pi=issueIndex(path,'participants');
+  const c=ci>=0?ctx.contributions?.[ci]:null;
+  const r=ri>=0?ctx.split_rules?.[ri]:null;
+  const expIndex=r?.expense_index??c?.expense_index??ei;
+  const expense=Number.isInteger(expIndex)?ctx.expenses?.[expIndex]:null;
+  const item=expense?.items?.[r?.item_index];
+  if(ci>=0){
+   const name=c?.contributor_name||'찬조자';
+   const amount=c?.amount!=null?money(c.amount):'금액 미확인';
+   if(code==='missing_contribution_uses'||path.includes('.uses'))return {title:`${name}님의 찬조금 ${amount} 적용`,detail:`${expense?`${expense.round_number||'?'}차 결제`: '해당 결제'}에서 찬조금을 어떤 항목에 적용할지 정해야 해요.`,hint:'전체 항목에 비례 배분하거나 특정 항목을 선택할 수 있어요.'};
+   return {title:`${name}님의 찬조금 ${amount} 확인`,detail:raw||`찬조금의 적용 방식 또는 입력값(${path})을 확인해야 해요.`,hint:'찬조자, 금액, 적용 항목을 직접 수정해 주세요.'};
+  }
+  if(ri>=0)return {title:`${item?.name||`분담 규칙 ${ri+1}`}의 정산 방식 확인`,detail:raw||`이 항목의 참여자와 분담 기준이 불명확해요. (${code||path})`,hint:'전체 참석자 균등 분담이 맞을 때만 선택하세요. 개인별 예외가 있으면 직접 수정해 주세요.'};
+  if(ei>=0)return {title:`${expense?.items?.[0]?.name||`결제 ${ei+1}`} 내역 확인`,detail:raw||`결제 금액이나 항목 정보를 확인해 주세요. (${code||path})`,hint:'영수증의 항목별 금액과 결제 총액을 비교해 주세요.'};
+  if(pi>=0)return {title:`${ctx.participants?.[pi]||`참여자 ${pi+1}`} 정보 확인`,detail:raw||'참여자 이름이나 정산 참여 여부를 확인해 주세요.',hint:'참여자 및 차수별 참석자를 직접 수정해 주세요.'};
+  if(path.startsWith('rounds'))return {title:'차수별 참석자 확인',detail:raw||`차수 정보(${path})를 확인해야 해요.`,hint:'해당 차수에 실제 참여한 사람을 직접 선택해 주세요.'};
+  if(path.startsWith('exceptions')){
+   const xi=issueIndex(path,'exceptions');
+   const ex=xi>=0?ctx.exceptions?.[xi]:null;
+   const targetExpense=ex&&Number.isInteger(ex.expense_index)?ctx.expenses?.[ex.expense_index]:null;
+   const targetItem=ex&&Number.isInteger(ex.item_index)?targetExpense?.items?.[ex.item_index]:null;
+   const person=ex?.participant_name||'대상자 미확인';
+   const kind=ex?.kind==='exclude'?'비용 분담 제외':ex?.kind==='fixed_amount'?'고정 금액 부담':ex?.kind==='covered_by_other'?'다른 사람 대신 부담':ex?.kind||'방식 미확인';
+   const target=targetItem?.name|| (targetExpense?`${ex.expense_index+1}번 결제의 항목 미확인`:'결제·항목 미확인');
+   const extra=ex?.reason||ex?.basis_note||ex?.note||'';
+   return {title:`${person} · ${target} 예외 확인`,detail:`대상: ${person} / 항목: ${target} / 방식: ${kind}${ex?.fixed_amount!=null?` / 지정액: ${money(ex.fixed_amount)}`:''}${ex?.covered_by_name?` / 대신 부담: ${ex.covered_by_name}`:''}. ${extra?`기록된 사유: ${extra}`:raw||'적용 사유와 대상이 올바른지 확인해 주세요.'}`,hint:!ex||!targetItem?'대상자나 항목이 확정되지 않았어요. 직접 조건 수정에서 정확히 지정해 주세요.':'이 예외가 실제 합의 내용과 일치하는지 확인해 주세요.'};
+  }
+  return {title:raw?'정산 조건 확인':'확인할 정산 조건이 있어요',detail:raw||`검증 항목 ${code||path||'미지정'}의 내용을 확인해야 해요.`,hint:'세부 정산 조건을 열어 수정할 수 있어요.'};
+ };
+ const IssueResolver=({issue,index}:{issue:any;index:number})=>{
+  const path=String(issue.path||'');
+  const ci=issueIndex(path,'contributions');const ri=issueIndex(path,'split_rules');const xi=issueIndex(path,'exceptions');
+  const contribution=ci>=0?ctx.contributions?.[ci]:null;
+  const canAllocate=ci>=0&&(issue.code==='missing_contribution_uses'||path.includes('.uses'));
+  const rule=ri>=0?ctx.split_rules?.[ri]:null;
+  const exception=xi>=0?ctx.exceptions?.[xi]:null;
+  const exceptionExpense=exception&&Number.isInteger(exception.expense_index)?ctx.expenses?.[exception.expense_index]:null;
+  const exceptionItem=exception&&Number.isInteger(exception.item_index)?exceptionExpense?.items?.[exception.item_index]:null;
+  const exceptionRule=exception?ctx.split_rules?.find((r:any)=>r.expense_index===exception.expense_index&&r.item_index===exception.item_index):null;
+  const key=`${index}:${path}`;
+  const choices=contribution&&Number.isInteger(contribution.expense_index)?itemChoices(contribution.expense_index):[];
+  const selection=issueSelections[key]||'';
+  const description=describeIssue(issue);
+  return <View style={styles.editorGroup} key={key}>
+   <Text style={styles.subhead}>{description.title}</Text>
+   <Text style={styles.muted}>{description.detail}</Text>
+   <Text style={styles.helper}>{description.hint}</Text>
+   {canAllocate&&<>
+    <Chip text="이 결제의 모든 항목에 금액 비례 배분" active={selection==='all'} onPress={()=>setIssueSelections(v=>({...v,[key]:'all'}))}/>
+    {choices.map(x=><Chip key={x.index} text={`${x.name}에만 적용 (${money(x.amount)})`} active={selection===`item:${x.index}`} onPress={()=>setIssueSelections(v=>({...v,[key]:`item:${x.index}`}))}/>)}
+    <Text style={styles.helper}>비례 배분은 금액을 기준으로 계산합니다. 찬조금 전달 여부는 별도로 확인해야 해요.</Text>
+   </>}
+   {ri>=0&&<>
+    <Text style={styles.muted}>대상: {ctx.expenses?.[rule?.expense_index]?.items?.[rule?.item_index]?.name||'항목 확인 필요'}</Text>
+    <Chip text="해당 차수 참석자끼리 균등 분담" active={selection==='equal-all'} onPress={()=>setIssueSelections(v=>({...v,[key]:'equal-all'}))}/>
+   </>}
+   {xi>=0&&exception&&<>
+    {exception.kind==='exclude'&&exceptionItem&&exception.participant_name&&exceptionRule&&<Chip text={`${exception.participant_name}님을 ${exceptionItem.name} 비용에서 제외`} active={selection==='apply-exclude'} onPress={()=>setIssueSelections(v=>({...v,[key]:'apply-exclude'}))}/>}
+    <Chip text="이 예외 조건은 잘못 입력됨 · 삭제" active={selection==='remove-exception'} onPress={()=>setIssueSelections(v=>({...v,[key]:'remove-exception'}))}/>
+    <Text style={styles.helper}>삭제는 해당 예외만 제거합니다. 제외 적용은 해당 항목의 분담자 명단에서도 대상자를 제외합니다.</Text>
+    <Button text="선택한 예외 처리 · 다시 검증" disabled={busy||!selection} onPress={()=>resolveIssue(issue,selection)}/>
+   </>}
+   {(canAllocate||ri>=0)&&<Button text="선택한 조건 적용 · 다시 검증" disabled={busy||!selection} onPress={()=>resolveIssue(issue,selection)}/>}
+   <Button text="직접 조건 수정하기" secondary onPress={()=>setPage('edit')}/>
+  </View>;
+ };
  const createCustom=()=>run(async()=>{
   const people=manualPeople;if(!people.length||new Set(people).size!==people.length)throw new Error('참여자 명단을 확인해 주세요.');
   if(!manualPayer.trim()||!manualItem.trim())throw new Error('결제자와 항목을 입력해 주세요.');const amount=safeAmount(manualAmount);const round=Number(manualRound);
@@ -406,6 +582,23 @@ const [imageNotes, setImageNotes] = useState('');
  const diffTotal=diffTransfers.reduce((sum,t)=>sum+(Number(t.amount.replace(/,/g,''))||0),0);
  const diffValid=manualAmount.trim()!==''&&/^\d+$/.test(manualAmount.replace(/,/g,''))&&Number(manualAmount.replace(/,/g,''))===diffTotal&&diffTransfers.length>0&&diffTransfers.every(t=>t.from&&t.to&&t.from!==t.to&&manualPeople.includes(t.from)&&manualPeople.includes(t.to)&&/^\d+$/.test(t.amount.replace(/,/g,''))&&Number(t.amount.replace(/,/g,''))>0);
  const createDiff=()=>{if(!diffValid){Alert.alert('금액 불일치','송금액 합계와 총액, 참여자 및 송금 관계를 확인해 주세요.');return;}const sid='local-diff-'+Date.now();const amount=safeAmount(manualAmount);const transfers=diffTransfers.map(t=>({expense_index:0,from_participant:t.from,to_participant:t.to,amount:safeAmount(t.amount)}));const context={participants:manualPeople,rounds:[{round_number:Number(manualRound)||1,participant_names:manualPeople}],expenses:[],split_rules:[],direct_transfers:transfers,transfer_total:amount};const calc:Calculation={input_revision:1,result:{participant_totals:{},settlements:transfers,allocations:[]}};const d:Session={session_id:sid,source_text:'[사용자 지정 차액 정산] 송금 총액 '+money(amount),revisions:[{input_revision:1,context,issues:[]}],calculations:[calc]};setLocalDiffs(v=>({...v,[sid]:{session:d,calculation:calc}}));setLocal(sid,{title:title.trim()||'차액 정산'});setCreateDraftEnabled(false);clearCreateDraft();load(d,'detail');setMessage('차액 정산이 생성됐어요. 송금 내역을 확인하세요.');};
+ const deleteAllVisible=()=>{
+  if(!active.length)return;
+  const count=active.length;
+  Alert.alert('정산 내역 전체 삭제',`현재 목록의 ${count}건을 이 기기에서 숨길까요? 서버 원본은 삭제되지 않으며, 기존 입금 기록도 복구할 수 없을 수 있어요.`,[
+   {text:'취소',style:'cancel'},
+   {text:`${count}건 삭제`,style:'destructive',onPress:()=>{
+    const ids=active.map(x=>x.session_id);
+    setMeta(prev=>{
+     const next={...prev};
+     for(const id of ids)next[id]={...next[id],deleted:true};
+     return next;
+    });
+    setMenuSid(null);
+    setMessage(`${count}건을 이 기기의 정산 목록에서 숨겼어요. 서버 원본은 유지됩니다.`);
+   }},
+  ]);
+ };
  const deleteById=(sid:string)=>Alert.alert('정산 삭제','이 기기의 목록에서 정산을 삭제할까요? 서버에 저장된 원본은 유지돼요.',[{text:'취소',style:'cancel'},{text:'삭제',style:'destructive',onPress:()=>{setLocal(sid,{deleted:true});setPage('home');setDoc(null);}}]);
  const Header=()=> <View style={styles.header}><Pressable onPress={()=>{if(page!=='home')navigateBack();}}><Text style={styles.logo}>모아<Text style={{color:C.green}}>정산</Text></Text><Text style={styles.logoSub}>함께 쓴 돈, 함께 확인</Text></Pressable><Text style={styles.headerIcon}>◈</Text></View>;
  const Back=({label='돌아가기'}:{label?:string})=><Pressable style={{marginBottom:16}} onPress={()=>navigateBack()}><Text style={styles.link}>‹ {label}</Text></Pressable>;
@@ -505,7 +698,7 @@ const [imageNotes, setImageNotes] = useState('');
  };
 
  return <View style={{flex:1,backgroundColor:C.bg}}><StatusBar barStyle="dark-content" /><KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==='ios'?'padding':undefined}><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.container}><Header/>
- {page==='home'&&<><View style={styles.hero}><Text style={styles.eyebrow}>SETTLEMENT HOME</Text><Text style={styles.heroTitle}>정산 현황을{ '\n'}한눈에.</Text><Text style={styles.muted}>진행 중인 정산과 입금 확인을 관리하세요.</Text></View>{message?<Text style={styles.notice}>{message}</Text>:null}<View style={styles.rowBetween}><Text style={styles.sectionTitle}>내 정산 <Text style={styles.muted}>{active.length}건</Text></Text><Pressable onPress={()=>run(refresh)}><Text style={styles.link}>새로고침 ↻</Text></Pressable></View><View style={styles.board}>{active.map((s,i)=>{
+ {page==='home'&&<><View style={styles.hero}><Text style={styles.eyebrow}>SETTLEMENT HOME</Text><Text style={styles.heroTitle}>정산 현황을{ '\n'}한눈에.</Text><Text style={styles.muted}>진행 중인 정산과 입금 확인을 관리하세요.</Text></View>{message?<Text style={styles.notice}>{message}</Text>:null}<View style={styles.rowBetween}><Text style={styles.sectionTitle}>내 정산 <Text style={styles.muted}>{active.length}건</Text></Text><View style={{flexDirection:'row',alignItems:'center',gap:12}}>{active.length>0&&<Pressable onPress={deleteAllVisible}><Text style={{color:'#B42318',fontWeight:'800',fontSize:13}}>전체 삭제</Text></Pressable>}<Pressable onPress={()=>run(refresh)}><Text style={styles.link}>새로고침 ↻</Text></Pressable></View></View><View style={styles.board}>{active.map((s,i)=>{
   const d=localDiffs[s.session_id]?.session||docsById[s.session_id];const context=d?.revisions?.[d.revisions.length-1]?.context;
   const calc=d?lastCalculation(d):null;
   const people:string[]=context?.participants||[];
@@ -522,11 +715,11 @@ const [imageNotes, setImageNotes] = useState('');
    <Pressable onPress={()=>open(s.session_id)}><Text style={styles.link}>자세히 보기 ›</Text></Pressable>
   </View>;
  })}<Pressable style={[styles.boardTile,styles.addTile]} onPress={startNew}><Text style={styles.addIcon}>＋</Text><Text style={styles.addTitle}>정산 추가</Text></Pressable></View><Text style={styles.helper}>정산은 사용자가 직접 목록에서 삭제할 때까지 남아요. 입금 확인은 이 기기에 저장돼요.</Text></>}
- {page==='create'&&<><Back/><Text style={styles.eyebrow}>NEW SETTLEMENT</Text><Text style={styles.heroTitle}>새 정산 만들기</Text><Text style={styles.muted}>AI에 상황과 사진을 함께 전달하거나 직접 입력하세요.</Text><Panel title="정산 이름"><Field label="이름 (선택)" value={title} onChange={setTitle} placeholder="예: 동아리 회식"/></Panel><Panel title="입력 방식"><View style={styles.wrap}><Chip text="✦ AI 조건 입력" active={mode==='ai'} onPress={()=>setMode('ai')}/><Chip text="사용자 지정" active={mode==='custom'} onPress={()=>setMode('custom')}/></View></Panel>{mode==='ai'?<Panel title="AI 정산 분석"><Text style={styles.muted}>텍스트와 영수증·메모 사진을 함께 분석할 수 있어요. 사진을 첨부하면 AI 분석 후 영수증 항목과 금액을 먼저 검수합니다.</Text><Field label="정산 상황 (사진만 있어도 가능)" value={aiText} onChange={setAiText} multiline placeholder="민수가 식사비 6만원을 냈고 도윤은 술을 안 마셨어..."/><Button text={selectedImage?`✓ 사진 첨부됨 · 다른 사진 선택`:'＋ 영수증 / 메모 사진 첨부'} secondary onPress={chooseImage} disabled={busy}/>{selectedImage?<Text style={styles.success}>첨부 사진: {selectedImage.name}</Text>:null}<Button text={busy?'분석 중...':'AI로 조건 분석하기 →'} onPress={createAI} disabled={busy}/></Panel>:<><Panel title="정산 방식"><View style={styles.wrap}><Chip text="N분의 1 정산" active={manualKind==='equal'} onPress={()=>setManualKind('equal')}/><Chip text="차액 정산" active={manualKind==='diff'} onPress={()=>setManualKind('diff')}/></View></Panel><Panel title="정산 참여자"><View style={{flexDirection:'row',gap:8,alignItems:'center'}}><TextInput style={[styles.input,{flex:1}]} value={personEntry} onChangeText={setPersonEntry} placeholder="이름 입력" onSubmitEditing={addPerson}/><Pressable onPress={addPerson} style={[styles.btn,{marginTop:0,minWidth:48}]}><Text style={styles.btnText}>＋</Text></Pressable></View><View style={styles.wrap}>{manualPeople.map(p=><Pressable key={p} style={styles.addPill} onPress={()=>setManualPeople(v=>v.filter(x=>x!==p))}><Text style={styles.addPillText}>{p}  ×</Text></Pressable>)}</View></Panel><Panel title={manualKind==='equal'?'균등 정산 조건':'차액 정산 조건'}><Field label={manualKind==='diff'?'송금 총액 (원)':'총 지출액 (원)'} value={manualAmount} onChange={setManualAmount} numeric placeholder="90000"/><Field label="차수" value={manualRound} onChange={setManualRound} numeric/>{manualKind==='equal'?<><Field label="결제자" value={manualPayer} onChange={setManualPayer} placeholder="민수"/><Field label="항목" value={manualItem} onChange={setManualItem}/><Button text="기본 정산 조건 만들기 →" onPress={createCustom} disabled={busy}/><Text style={styles.helper}>차수별 참여, 비주류 제외, 찬조금은 다음 정산 조건 수정 화면에서 추가할 수 있어요.</Text><Button text="빈 양식으로 상세 입력" secondary onPress={createBlank} disabled={busy}/></>:<><Text style={styles.muted}>총액은 송금할 금액의 합계를 뜻해요. 누가 누구에게 얼마를 보내는지 입력하세요.</Text>{diffTransfers.map((t,i)=><View key={i} style={styles.arrayRow}><View style={styles.rowBetween}><Text style={styles.subhead}>송금 {i+1}</Text><Pressable onPress={()=>setDiffTransfers(v=>v.filter((_,j)=>j!==i))}><Text style={styles.deleteText}>삭제</Text></Pressable></View><Text style={styles.label}>보내는 사람</Text><View style={styles.wrap}>{manualPeople.map(p=><Chip key={'from'+p} text={p} active={t.from===p} onPress={()=>setDiffTransfers(v=>v.map((x,j)=>j===i?{...x,from:p}:x))}/>)}</View><Text style={styles.label}>받는 사람</Text><View style={styles.wrap}>{manualPeople.map(p=><Chip key={'to'+p} text={p} active={t.to===p} onPress={()=>setDiffTransfers(v=>v.map((x,j)=>j===i?{...x,to:p}:x))}/>)}</View><Field label="송금액 (원)" numeric value={t.amount} onChange={v=>setDiffTransfers(a=>a.map((x,j)=>j===i?{...x,amount:v}:x))}/></View>)}<Button text="＋ 송금 내역 추가" secondary onPress={()=>setDiffTransfers(v=>[...v,{from:'',to:'',amount:''}])}/><Text style={{fontWeight:'800',color:diffValid?'#2563EB':'#DC2626'}}>{diffValid?'금액이 일치해요!':'총액과 정산 금액이 불일치해요!'}</Text><Text style={styles.muted}>송금액 합계: {money(diffTotal)}</Text><Button text="정산 시작 · 금액 계산 →" disabled={!diffValid} onPress={createDiff}/></>}</Panel></>}</>}
+ {page==='create'&&<><Back/><Text style={styles.eyebrow}>NEW SETTLEMENT</Text><Text style={styles.heroTitle}>새 정산 만들기</Text><Text style={styles.muted}>AI에 상황과 사진을 함께 전달하거나 직접 입력하세요.</Text><Panel title="정산 이름"><Field label="이름 (선택)" value={title} onChange={setTitle} placeholder="예: 동아리 회식"/></Panel><Panel title="입력 방식"><View style={styles.wrap}><Chip text="✦ AI 조건 입력" active={mode==='ai'} onPress={()=>setMode('ai')}/><Chip text="사용자 지정" active={mode==='custom'} onPress={()=>setMode('custom')}/></View></Panel>{mode==='ai'?<Panel title="AI 정산 분석"><Text style={styles.muted}>텍스트와 영수증·메모 사진을 함께 분석할 수 있어요. 사진을 첨부하면 AI 분석 후 영수증 항목과 금액을 먼저 검수합니다.</Text><Field label="정산 상황 (사진만 있어도 가능)" value={aiText} onChange={setAiText} multiline placeholder="민수가 식사비 6만원을 냈고 도윤은 술을 안 마셨어..."/><Button text={selectedImage?`✓ 사진 첨부됨 · 다른 사진 선택`:'＋ 영수증 / 메모 사진 첨부'} secondary onPress={chooseImage} disabled={busy}/>{selectedImage?<Text style={styles.success}>첨부 사진: {selectedImage.name}</Text>:null}{sourceEditing&&<Text style={styles.success}>이전에 검수한 영수증 내역은 보존됩니다. 문장만 수정하여 다시 분석하세요.</Text>}<Button text={busy?'분석 중...':sourceEditing?'수정한 문장으로 다시 분석하기 →':'AI로 조건 분석하기 →'} onPress={createAI} disabled={busy}/></Panel>:<><Panel title="정산 방식"><View style={styles.wrap}><Chip text="N분의 1 정산" active={manualKind==='equal'} onPress={()=>setManualKind('equal')}/><Chip text="차액 정산" active={manualKind==='diff'} onPress={()=>setManualKind('diff')}/></View></Panel><Panel title="정산 참여자"><View style={{flexDirection:'row',gap:8,alignItems:'center'}}><TextInput style={[styles.input,{flex:1}]} value={personEntry} onChangeText={setPersonEntry} placeholder="이름 입력" onSubmitEditing={addPerson}/><Pressable onPress={addPerson} style={[styles.btn,{marginTop:0,minWidth:48}]}><Text style={styles.btnText}>＋</Text></Pressable></View><View style={styles.wrap}>{manualPeople.map(p=><Pressable key={p} style={styles.addPill} onPress={()=>setManualPeople(v=>v.filter(x=>x!==p))}><Text style={styles.addPillText}>{p}  ×</Text></Pressable>)}</View></Panel><Panel title={manualKind==='equal'?'균등 정산 조건':'차액 정산 조건'}><Field label={manualKind==='diff'?'송금 총액 (원)':'총 지출액 (원)'} value={manualAmount} onChange={setManualAmount} numeric placeholder="90000"/><Field label="차수" value={manualRound} onChange={setManualRound} numeric/>{manualKind==='equal'?<><Field label="결제자" value={manualPayer} onChange={setManualPayer} placeholder="민수"/><Field label="항목" value={manualItem} onChange={setManualItem}/><Button text="기본 정산 조건 만들기 →" onPress={createCustom} disabled={busy}/><Text style={styles.helper}>차수별 참여, 비주류 제외, 찬조금은 다음 정산 조건 수정 화면에서 추가할 수 있어요.</Text><Button text="빈 양식으로 상세 입력" secondary onPress={createBlank} disabled={busy}/></>:<><Text style={styles.muted}>총액은 송금할 금액의 합계를 뜻해요. 누가 누구에게 얼마를 보내는지 입력하세요.</Text>{diffTransfers.map((t,i)=><View key={i} style={styles.arrayRow}><View style={styles.rowBetween}><Text style={styles.subhead}>송금 {i+1}</Text><Pressable onPress={()=>setDiffTransfers(v=>v.filter((_,j)=>j!==i))}><Text style={styles.deleteText}>삭제</Text></Pressable></View><Text style={styles.label}>보내는 사람</Text><View style={styles.wrap}>{manualPeople.map(p=><Chip key={'from'+p} text={p} active={t.from===p} onPress={()=>setDiffTransfers(v=>v.map((x,j)=>j===i?{...x,from:p}:x))}/>)}</View><Text style={styles.label}>받는 사람</Text><View style={styles.wrap}>{manualPeople.map(p=><Chip key={'to'+p} text={p} active={t.to===p} onPress={()=>setDiffTransfers(v=>v.map((x,j)=>j===i?{...x,to:p}:x))}/>)}</View><Field label="송금액 (원)" numeric value={t.amount} onChange={v=>setDiffTransfers(a=>a.map((x,j)=>j===i?{...x,amount:v}:x))}/></View>)}<Button text="＋ 송금 내역 추가" secondary onPress={()=>setDiffTransfers(v=>[...v,{from:'',to:'',amount:''}])}/><Text style={{fontWeight:'800',color:diffValid?'#2563EB':'#DC2626'}}>{diffValid?'금액이 일치해요!':'총액과 정산 금액이 불일치해요!'}</Text><Text style={styles.muted}>송금액 합계: {money(diffTotal)}</Text><Button text="정산 시작 · 금액 계산 →" disabled={!diffValid} onPress={createDiff}/></>}</Panel></>}</>}
 
 
  {page==='imageReview'&&imagePreview&&<><Back label="사진 입력으로 돌아가기"/><Text style={styles.heroTitle}>영수증 분석 결과 확인</Text><Text style={styles.muted}>사진 원본과 비교하여 품목과 금액을 수정하세요. 승인 전에는 정산 세션을 만들지 않습니다.</Text><Panel title="인식된 품목">{imageItems.map((item,i)=><View key={i} style={styles.arrayRow}><Field label={`항목 ${i+1}`} value={item.name} onChange={v=>setImageItems(a=>a.map((x,j)=>j===i?{...x,name:v}:x))}/><Field label="항목 전체 금액 (원)" numeric value={item.amount} onChange={v=>setImageItems(a=>a.map((x,j)=>j===i?{...x,amount:v}:x))}/><Button text="항목 삭제" secondary small onPress={()=>setImageItems(a=>a.filter((_,j)=>i!==j))}/></View>)}<Button text="＋ 항목 추가" secondary onPress={()=>setImageItems(a=>[...a,{name:'',amount:''}])}/><Field label="영수증 총액 (원)" numeric value={imageTotal} onChange={setImageTotal}/><Text style={styles.muted}>항목 합계: {money(imageItems.reduce((sum,x)=>sum+(Number(x.amount.replace(/,/g,''))||0),0))}</Text><Field label="불명확한 부분 / 추가 확인 사항" multiline value={imageNotes} onChange={setImageNotes}/><Button text={busy?'확인 중...':'영수증 확인 완료 · 정산 조건 검토 →'} disabled={busy} onPress={confirmReceipt}/><Text style={styles.helper}>영수증을 확인한 후에도 기존 정산 조건 검토 화면에서 인원·분담·예외를 확인해야 합니다.</Text></Panel></>}
- {page==='review'&&doc&&<><Back/><Text style={styles.eyebrow}>REVIEW BEFORE SETTLEMENT</Text><Text style={styles.heroTitle}>조건을 확인해 주세요</Text><Text style={styles.muted}>AI가 추출했더라도 금액·인원·예외는 직접 확인해야 해요.</Text><Panel title="정산 조건 요약"><Summary context={ctx}/><Text style={styles.muted}>입력 버전 {rev?.input_revision}</Text><Button text="✎ 정산 조건 수정" onPress={()=>setPage('edit')}/></Panel><Panel title="원문 및 확인이 필요한 부분"><Text style={styles.sourceText}>{doc.source_text}</Text>{doc.supplied_evidence?<Text style={styles.sourceText}>{doc.supplied_evidence}</Text>:null}{issues.length?issues.map((x,i)=><Text key={i} style={styles.issue}>⚠ {x.question} {typeof x.path==='string'&&x.path.startsWith('split_rules[')?'· 분담 규칙을 확인해 주세요.':typeof x.path==='string'&&x.path.startsWith('expenses[')?'· 결제 항목을 확인해 주세요.':''} ({x.path})</Text>):<Text style={styles.success}>자동 검토에서 미해결 항목을 찾지 못했어요. 실제 조건은 직접 확인하세요.</Text>}</Panel><View style={{marginTop:18}}><Button text={busy?'계산 중...':'정산 시작 · 금액 계산 →'} disabled={busy||!!issues.length} onPress={begin}/><Text style={styles.helper}>버튼을 누르면 표시된 정산 조건을 확인한 것으로 기록하고 계산합니다. 실제 송금은 자동으로 수행하지 않아요.</Text></View></>}
+ {page==='review'&&doc&&<><Back/><Text style={styles.eyebrow}>REVIEW BEFORE SETTLEMENT</Text><Text style={styles.heroTitle}>조건을 확인해 주세요</Text><Text style={styles.muted}>AI가 추출했더라도 금액·인원·예외는 직접 확인해야 해요.</Text><Button text="← 처음 입력한 문장 수정하기" secondary onPress={returnToOriginal}/><Panel title="정산 조건 요약"><Summary context={ctx}/><Text style={styles.muted}>입력 버전 {rev?.input_revision}</Text><Button text="✎ 정산 조건 수정" onPress={()=>setPage('edit')}/></Panel><Panel title="원문 및 확인이 필요한 부분"><Text style={styles.sourceText}>{doc.source_text}</Text>{doc.supplied_evidence?<Text style={styles.sourceText}>{doc.supplied_evidence}</Text>:null}{visibleIssues.length?visibleIssues.map((x,i)=><IssueResolver key={`${String(x.path||'')}:${String(x.code||'')}:${i}`} issue={x} index={i}/>):<Text style={styles.success}>자동 검토에서 미해결 항목을 찾지 못했어요. 실제 조건은 직접 확인하세요.</Text>}</Panel><View style={{marginTop:18}}><Button text={busy?'계산 중...':'정산 시작 · 금액 계산 →'} disabled={busy||!!issues.length} onPress={begin}/><Text style={styles.helper}>버튼을 누르면 표시된 정산 조건을 확인한 것으로 기록하고 계산합니다. 실제 송금은 자동으로 수행하지 않아요.</Text></View></>}
  {page==='edit'&&doc&&draft&&<><Back label="검수 화면으로"/><Text style={styles.eyebrow}>CUSTOM EDITOR</Text><Text style={styles.heroTitle}>정산 조건 수정</Text><Text style={styles.muted}>참여자, 차수, 항목, 분담 기준, 예외, 찬조금을 직접 수정할 수 있어요.</Text><Panel title="정산 조건 편집"><FriendlyEditor value={draft} onChange={v=>{setDraft(v);setDirty(true);}}/><Button text={showAdvanced?'고급 조건 편집 닫기':'예외 · 찬조 · 고급 조건 편집'} secondary onPress={()=>setShowAdvanced(v=>!v)}/>{showAdvanced&&(schema?<SchemaEditor schema={schema} value={draft} onChange={v=>{setDraft(v);setDirty(true);}}/>:<Text style={styles.issue}>서버의 /api/schema를 불러오지 못했어요. 네트워크를 확인해 주세요.</Text>)}<Text style={styles.helper}>결제 번호와 항목 번호는 0부터 시작합니다. 항목을 삭제했다면 참조 번호도 다시 확인하세요.</Text><Button text={busy?'저장 중...':'수정 내용 저장 · 다시 검수 →'} disabled={busy||!dirty} onPress={saveEdit}/></Panel></>}
  {page==='detail'&&doc&&<><Back label="홈으로"/><Text style={styles.eyebrow}>ACTIVE SETTLEMENT</Text><Text style={styles.heroTitle}>{meta[doc.session_id]?.title||'진행 중인 정산'}</Text><Text style={styles.muted}>입금 상태를 직접 대조하고 토글로 기록하세요.</Text><Panel title="정산 개요"><Summary context={ctx}/><Text style={styles.cardAmount}>{money(localDiffs[doc.session_id]?ctx.transfer_total:total(doc))}</Text>{!localDiffs[doc.session_id]&&<Button text="조건 다시 검토·수정" secondary onPress={()=>setPage('review')}/>}</Panel>{calculation&&calculation.input_revision===rev?.input_revision?<><Panel title="송금 및 입금 관리"><PaymentList d={doc} calc={calculation}/><Button text="전체 송금 안내 공유" secondary onPress={share}/></Panel></>:<Panel title="정산 진행 전"><Text style={styles.muted}>아직 계산이 완료되지 않았어요.</Text><Button text="검수하고 계산하기" onPress={()=>setPage('review')}/></Panel>}<Panel title="정산 관리"><Field label="정산명" value={meta[doc.session_id]?.title||''} onChange={v=>setLocal(doc.session_id,{title:v})} placeholder="정산명 입력"/><Button text="정산 삭제" secondary danger onPress={deleteSession}/></Panel></>}
  </ScrollView></KeyboardAvoidingView>{splash&&<View style={styles.splash}><Text style={styles.splashMark}>모</Text><Text style={styles.splashName}>모아정산</Text><Text style={styles.logoSub}>함께 쓴 돈, 함께 확인</Text></View>}{busy&&<View style={styles.loading}><ActivityIndicator size="large" color={C.green}/><Text style={{color:C.ink,marginTop:10}}>처리 중...</Text></View>}</View>;
