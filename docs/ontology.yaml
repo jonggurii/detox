@@ -1,0 +1,287 @@
+# Smart Settlement Agent (detox) — 개념 온톨로지
+# 규범 도메인 모델. 실행용 JSON Schema / DB 테이블 명세가 아니다.
+version: '3.6'
+status: proposed
+last_updated: '2026-11-11'
+source_of_truth: docs/ontology.yaml
+references:
+  problem: docs/PROBLEM.md
+  interviews: docs/research/interviews_union.md
+  spec: docs/SPEC.md
+  request_context_schema: src/settlements/schemas/request_context.schema.json
+scope:
+  purpose: '복합 모임의 지출·품목·예외·찬조·부담·송금 안내를 추적한다.'
+  out_of_scope: [은행 자동 이체, 은행 자동 입금 조회, 카카오톡 자동 발송, 훼손 영수증 복원]
+  notes:
+    - '클래스 수는 8개다. 부속 객체는 하위 속성으로 흡수한다.'
+    - 'RequestContext는 도메인 엔티티가 아니라 사용자 확인 전 입력 DTO다.'
+    - '인터뷰는 문제·행동의 근거이며 코드 완료/효과 검증의 증명은 아니다.'
+
+enums:
+  session_status: [draft, review_required, confirmed, calculated, requested, completed, cancelled]
+  split_method: [equal, explicit_amount]
+  exception_kind: [exclude, fixed_amount, covered_by_other]
+  payment_status: [unconfirmed, partially_confirmed, confirmed]
+  request_status: [draft, requested, cancelled]
+
+classes:
+  Participant:
+    label: 참여자
+    description: '세션 안에서 결제자·부담자·찬조자·정산 담당자 등의 역할을 맡는 사람.'
+    key: participant_id
+    attributes:
+      participant_id: {type: string, required: true, description: 세션 내 유일 식별자}
+      name: {type: string, required: true, description: 표시 이름 또는 합의된 호칭}
+      bank_account: {type: string, required: false, sensitive: true, description: '송금 수취용 확인된 계좌; 없으면 안내에 쓰지 않음'}
+    constraints:
+      - '이름이 같아도 자동 병합하지 않는다. 식별이 모호하면 사용자 확인을 요청한다.'
+
+  SettlementSession:
+    label: 모임 정산
+    description: '하나의 모임에 속하는 참여자, 차수, 지출, 확인 버전, 청구 이력을 묶는 단위.'
+    key: session_id
+    attributes:
+      session_id: {type: string, required: true}
+      status: {type: enum, values: [draft, review_required, confirmed, calculated, requested, completed, cancelled]}
+      rounds:
+        type: array
+        description: '종전 SettlementRound 및 RoundParticipation을 흡수한 차수별 참석 정보; 참석은 비용 면제와 동일하지 않다.'
+        items:
+          type: object
+          fields:
+            round_number: {type: integer, required: true}
+            participant_names: {type: 'array[string]', required: false}
+            participant_count: {type: integer, required: false}
+            attendance: {type: 'array[object]', required: false, fields: {participant_name: string, note: string}}
+            source_note: {type: string, required: false}
+      input_revision: {type: integer, description: '확정 입력이 변경되면 증가', required: false}
+      context_sha256: {type: string, description: '확정 입력의 정규화 해시', required: false}
+      confirmation_id: {type: string, description: '승인된 입력 버전에 연결', required: false}
+    constraints:
+      - '차수 참석/이탈 사실만으로 항목 비용에서 자동 제외하지 않는다.'
+      - '입력 버전 변경 시 이전 승인과 그 승인에 기반한 새 계산 실행 권한은 무효화한다.'
+
+  Expense:
+    label: 결제 내역
+    description: '한 명이 먼저 결제한 하나의 지출; 영수증·찬조는 이 지출의 종속 데이터다.'
+    key: expense_id
+    attributes:
+      expense_id: {type: string, required: true}
+      total_amount: {type: integer, min: 0, unit: KRW, required: true}
+      payer: {type: 'ref:Participant', required: true}
+      round_number: {type: integer, required: false}
+      description: {type: string, required: false}
+      receipt:
+        type: object
+        required: false
+        description: '종전 Receipt 흡수: 원본 이미지와 모델 추출은 별도 보존, 검토 후 확정'
+        fields:
+          original_path: {type: string, required: false}
+          normalized_image_path: {type: string, required: false}
+          sha256: {type: string, required: false}
+          detected_total_amount: {type: integer, required: false}
+          extraction_model: {type: string, required: false}
+          extraction_status: {type: string, required: false}
+          reviewed_revision: {type: integer, required: false}
+      subsidy:
+        type: array
+        required: false
+        description: '종전 Contribution + ContributionAllocation 흡수. 확정 찬조액과 각 항목 적용액을 저장'
+        items:
+          type: object
+          fields:
+            contributor: {type: 'ref:Participant', required: false}
+            amount: {type: integer, required: true}
+            uses: {type: 'array[object]', required: true, item_fields: {item_id: string, amount: integer}}
+            confirmation_status: {type: string, required: false}
+      items: {type: 'array[ref:Item]', required: true}
+    constraints:
+      - '한 지출의 결제자는 한 명이다.'
+      - '확정된 세부 항목 합계는 total_amount와 일치해야 한다.'
+      - '이미지에서 추출한 금액은 검토 전에는 확정 지출액으로 덮어쓰지 않는다.'
+
+  Item:
+    label: 비용 항목
+    description: '한 지출에서 분담 대상을 구분하는 음식·주류·서비스 등의 단위.'
+    key: item_id
+    attributes:
+      item_id: {type: string, required: true}
+      expense_id: {type: 'ref:Expense', required: true}
+      name: {type: string, required: true}
+      amount: {type: integer, min: 0, unit: KRW, required: true}
+      category: {type: string, required: false}
+      source_note: {type: string, required: false}
+    constraints:
+      - '영수증 인식 품목과 실제 분담 단위는 다를 수 있으므로 사용자가 병합·분리할 수 있다.'
+      - '서로 다른 분담 대상이나 예외가 있으면 구분된 항목으로 유지한다.'
+
+  SplitRule:
+    label: 비용 나누는 기준
+    description: '항목별 기본 부담 대상·방법·명시 금액 및 잔액 귀속자.'
+    key: rule_id
+    attributes:
+      rule_id: {type: string, required: true}
+      item_id: {type: 'ref:Item', required: true}
+      method: {type: enum, values: [equal, explicit_amount], required: true}
+      participant_ids: {type: 'array[ref:Participant]', required: true}
+      individual_amounts: {type: 'map[participant_id, integer]', required: false}
+      remainder_payer: {type: 'ref:Participant', required: false}
+      basis_note: {type: string, required: false}
+    constraints:
+      - '하나의 확정 항목에는 하나의 유효 SplitRule만 있다.'
+      - '금액이 나누어떨어지지 않으면 remainder_payer를 확인한다.'
+
+  ItemException:
+    label: 개인별 부담 조정
+    description: '항목의 특정 개인 소비 몫을 제외·고정·대신 부담하도록 조정.'
+    key: adjustment_id
+    attributes:
+      adjustment_id: {type: string, required: true}
+      item_id: {type: 'ref:Item', required: true}
+      participant: {type: 'ref:Participant', required: true}
+      kind: {type: enum, values: [exclude, fixed_amount, covered_by_other], required: true}
+      fixed_amount: {type: integer, min: 0, required: false}
+      covered_by: {type: 'ref:Participant', required: false}
+      reason: {type: string, required: false}
+    constraints:
+      - 'exclude의 원래 소비 몫은 0원으로 처리한다.'
+      - 'fixed_amount는 합의한 소비 몫이지 기존 몫에서 가감하는 차액이 아니다.'
+      - 'covered_by_other는 원래 소비 몫을 다른 사람에게 이전하며 2중 부과하지 않는다.'
+      - '동일 항목·인물 충돌, 자기 자신 대신 부담, 순환·연쇄 이전은 검토 대상으로 둔다.'
+
+  Allocation:
+    label: 항목별 개인 부담액
+    description: 'Python 계산기가 산출한 항목별 최종 개인 부담액 및 계산 근거.'
+    key: allocation_id
+    derived: true
+    attributes:
+      allocation_id: {type: string, required: true}
+      item_id: {type: 'ref:Item', required: true}
+      participant: {type: 'ref:Participant', required: true}
+      amount: {type: integer, min: 0, unit: KRW, required: true}
+      basis: {type: string, required: true}
+      calculation_id: {type: string, required: true}
+    constraints:
+      - '같은 계산 버전의 (item_id, participant) 당 최종 Allocation은 최대 하나다.'
+      - '같은 항목의 최종 부담액 합계 + 확정 찬조 적용액 = 항목 원금.'
+
+  SettlementResult:
+    label: 송금 요청 내역
+    description: '결제별 개인 송금 요청과 수동 입금 대조·안내 이력.'
+    key: result_id
+    derived: true
+    attributes:
+      result_id: {type: string, required: true}
+      expense_id: {type: 'ref:Expense', required: true}
+      sender: {type: 'ref:Participant', required: true}
+      receiver: {type: 'ref:Participant', required: true}
+      amount: {type: integer, min: 1, unit: KRW, required: true}
+      basis: {type: string, required: true}
+      request_status: {type: enum, values: [draft, requested, cancelled]}
+      payment_status: {type: enum, values: [unconfirmed, partially_confirmed, confirmed]}
+      payment_checks:
+        type: array
+        description: '종전 PaymentRecord 흡수; 실제 거래금액과 연결 금액, 담당자 검증 여부 기록'
+        items:
+          type: object
+          fields:
+            source_transfer_ref: {type: string, required: true}
+            source_transfer_amount: {type: integer, required: true}
+            mapped_amount: {type: integer, required: true}
+            reviewer_confirmed: {type: boolean, required: true}
+            checked_at: {type: string, required: false}
+      reminder:
+        type: array
+        description: '종전 ReminderMessage 흡수; 안내 초안/선택/발송 확인만 기록하며 자동 발송하지 않음'
+        items:
+          type: object
+          fields:
+            tone: {type: string, required: false}
+            relationship: {type: string, required: false}
+            handling: {type: string, required: false}
+            message_text: {type: string, required: false}
+            delivery_status: {type: string, required: false}
+    constraints:
+      - 'receiver는 해당 Expense.payer이고 sender와 달라야 한다.'
+      - '결제자 자신 및 최종 부담액 0원인 사람에게 송금 요청을 만들지 않는다.'
+      - '확인되지 않은 입금은 완료로 계산하지 않는다.'
+      - '동일 실입금 거래에 연결한 금액 합계는 실제 거래 총액 이하이다.'
+
+relationships:
+  - {from: SettlementSession, to: Participant, name: has_participants, cardinality: '1..*'}
+  - {from: SettlementSession, to: Expense, name: contains_expenses, cardinality: '0..*'}
+  - {from: Expense, to: Participant, name: paid_by, cardinality: '1'}
+  - {from: Expense, to: Item, name: contains_items, cardinality: '0..*'}
+  - {from: Item, to: SplitRule, name: governed_by, cardinality: '0..1 before confirmation; 1 after confirmation'}
+  - {from: Item, to: ItemException, name: adjusted_by, cardinality: '0..*'}
+  - {from: Item, to: Allocation, name: generates_allocations, cardinality: '0..*'}
+  - {from: Expense, to: SettlementResult, name: generates_requests, cardinality: '0..*'}
+
+absorbed_classes:
+  SettlementRound: SettlementSession.rounds
+  RoundParticipation: SettlementSession.rounds[].attendance
+  Receipt: Expense.receipt
+  Contribution: Expense.subsidy[]
+  ContributionAllocation: Expense.subsidy[].uses[]
+  PaymentRecord: SettlementResult.payment_checks[]
+  ReminderMessage: SettlementResult.reminder[]
+
+input_structures:
+  RequestContext:
+    kind: DTO
+    description: '사용자 자연어 및 영수증 검토에서 구성하는 입력. 사용자 승인 전 원천 사실로 확정하지 않는다.'
+    schema: src/settlements/schemas/request_context.schema.json
+    required: [participants, expenses]
+    fields:
+      participants: {type: 'array[string]', maps_to: Participant.name}
+      rounds: {type: 'array[Round]', maps_to: SettlementSession.rounds}
+      expenses: {type: 'array[ExpenseInput]', maps_to: Expense}
+      split_rules: {type: 'array[SplitRuleInput]', maps_to: SplitRule}
+      exceptions: {type: 'array[ItemExceptionInput]', maps_to: ItemException}
+      contributions: {type: 'array[ContributionInput]', maps_to: Expense.subsidy}
+      tone: {type: string, maps_to: SettlementResult.reminder.tone}
+      relationship: {type: string, maps_to: SettlementResult.reminder.relationship}
+      reminder_handling: {type: string, maps_to: SettlementResult.reminder.handling}
+    reference_convention:
+      expense_index: 'expenses 배열의 0-based 인덱스'
+      item_index: '해당 expense.items 배열의 0-based 인덱스'
+      participant_name: '참여자 이름/호칭; 동명이인 및 미확정은 사용자 확인'
+      nullable_values: 'null은 불확실/미확정; 숫자 0 또는 사용자 승인과 다름'
+
+processing_contract:
+  extraction:
+    model_setting: GEMINI_MODEL
+    planned_model: gemini-3.8-flash
+    channels: [receipt_image, natural_language_text]
+    role: '관찰 가능한 텍스트/품목/금액/규칙 추출만; 금액 합산·확정·송금 실행 금지'
+    implementation_status: '설계 목표; 현재 repository 소스 검증 전'
+  validation:
+    - 'JSON Schema 형식 검증은 review_context 의미 검증 및 사용자 승인과 다르다.'
+    - '인식 오류·모호성은 사용자 확인 이슈로 남긴다.'
+  review:
+    - '원본 이미지·원문·모델 결과·수정 이력·입력 버전을 보존한다.'
+    - '확인된 수정값을 재추출 결과가 자동 덮어쓰지 않는다.'
+  calculation:
+    owner: Python
+    stages: [confirmed_contribution_deduction, exclude, fixed_amount_and_split, covered_by_other_transfer, integer_remainder_allocation]
+    blocking_conditions: [unresolved_person, missing_expenses, item_sum_mismatch, unresolved_exception, unresolved_rounding, unconfirmed_subsidy]
+
+integrity_rules:
+  item_totals_match: '각 항목: Σ 개인 최종 Allocation + Σ 해당 항목 확정 찬조 = Item.amount'
+  expense_totals_match: '각 지출: Σ Item.amount = Expense.total_amount'
+  contribution_totals_match: '각 확정 찬조: Σ uses.amount = subsidy.amount; 항목 찬조액 ≤ 항목 원금'
+  request_totals_match: '각 지출: Σ 비결제자 송금 요청액 + 결제자 본인 최종 부담액 + 확정 찬조 적용액 = Expense.total_amount (찬조가 결제자에게 직접 적용된다는 정산 모델 전제; 자금 흐름 예외는 별도 확인)'
+  no_duplicate_claims: '동일 confirmation_id 재계산은 동일 결과를 반환하고 청구를 중복 생성하지 않는다.'
+  money: 'KRW 정수, 부동소수점으로 원화 나눗셈 금지, 미지정 잔액 귀속 시 계산 차단'
+  security: '프롬프트 인젝션은 외부 입력 텍스트로만 취급; 계좌·API 키·영수증 원본 노출 금지'
+
+traceability:
+  interviews:
+    receipts_and_items: [로그 1, 관찰 1]
+    split_methods: [로그 6, 로그 7, 로그 19]
+    leave_and_exclusion: [로그 12, 로그 15]
+    contributions: [로그 18]
+    covered_by_other: [로그 9]
+    payment_checks: [로그 14, 관찰 1]
+    reminders: [로그 17, 로그 18, 로그 19, 로그 20]
+  specification: [AC1, AC2, AC3, AC4, AC5, AC6, CALC1, CALC2, CALC3, CLAIM1, CLAIM2, PAY1, PAY2, NOTICE1]
