@@ -9,6 +9,7 @@ import logging
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -179,9 +180,40 @@ def create_app(db_path=None, parser=None, ocr=None):
                 detail={"code": "invalid_input"},
             ) from exc
 
-    @app.get("/")
-    def home():
-        return FileResponse(ROOT / "frontend" / "index.html")
+    # Expo Web 정적 빌드 경로
+    web_dist = ROOT / "mobile" / "dist"
+
+    if web_dist.is_dir() and (web_dist / "index.html").is_file():
+
+        # Expo JS/CSS 번들 제공
+        expo_assets = web_dist / "_expo"
+
+        if expo_assets.is_dir():
+            app.mount(
+                "/_expo",
+                StaticFiles(directory=expo_assets),
+                name="expo-assets",
+            )
+
+        # 기타 정적 파일 제공
+        assets = web_dist / "assets"
+
+        if assets.is_dir():
+            app.mount(
+                "/assets",
+                StaticFiles(directory=assets),
+                name="expo-public-assets",
+            )
+
+        @app.get("/")
+        def home():
+            return FileResponse(web_dist / "index.html")
+
+    else:
+
+        @app.get("/")
+        def home():
+            return FileResponse(ROOT / "frontend" / "index.html")
 
     @app.get("/api/schema")
     def schema():
