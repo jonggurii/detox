@@ -12,6 +12,9 @@
     "preview": {
       "distribution": "internal",
       "environment": "preview",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://detox-7o9w.onrender.com"
+      },
       "android": {
         "buildType": "apk"
       }
