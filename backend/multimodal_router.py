@@ -13,11 +13,90 @@ import os
 from urllib import request, error
 
 import httpx
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 
 def make_multimodal_router(app):
     router = APIRouter()
+
+    class ConfirmedImage(BaseModel):
+        # This is review evidence, NOT an ontology/RequestContext object.
+        text: str = Field(default='', max_length=12000)
+        reviewed_text: str = Field(min_length=1, max_length=24000)
+
+    @router.post('/api/receipts/multimodal-preview')
+    async def preview_image(file: UploadFile = File(...), text: str = Form('')):
+        api_key = os.getenv('GEMINI_API_KEY')
+        if not api_key:
+            raise HTTPException(503, 'GEMINI_API_KEY 환경변수가 설정되지 않았습니다.')
+        mime = file.content_type or 'image/jpeg'
+        if mime not in ('image/jpeg', 'image/png', 'image/webp'):
+            raise HTTPException(415, 'JPG, PNG, WEBP 이미지만 지원합니다.')
+        data = await file.read(8 * 1024 * 1024 + 1)
+        if not data or len(data) > 8 * 1024 * 1024:
+            raise HTTPException(413, '사진은 8MB 이하로 첨부해 주세요.')
+        prompt = (
+            '영수증 또는 정산 메모 이미지를 분석하세요. 이미지에 실제로 보이는 사실만 추출하고 '
+            '보이지 않는 이름, 수량, 가격은 추측하지 마세요. 사용자 설명은 이미지 인식 결과와 분리하세요. '
+            'JSON 객체만 반환하세요. 키: items (배열, 각 원소 {name:문자열, amount:정수 또는 null}), '
+            'total_amount (정수 또는 null), notes (문자열 배열). '
+            'items.amount는 해당 품목의 총액이며, 합계/부가세/결제액을 품목으로 중복 넣지 마세요. '
+            '불명확하거나 이미지와 사용자 설명이 충돌하면 notes에 명시하세요. '
+            '사용자 설명(참고용):\n' + (text or '(없음)')
+        )
+        payload = {'contents':[{'role':'user','parts':[
+            {'text':prompt},
+            {'inline_data':{'mime_type':mime,'data':base64.b64encode(data).decode('ascii')}}
+        ]}], 'generationConfig':{'temperature':0.1,'responseMimeType':'application/json'}}
+        model = os.getenv('GEMINI_MULTIMODAL_MODEL', 'gemini-3.5-flash')
+        def call():
+            url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
+            req = request.Request(url, data=json.dumps(payload).encode(), headers={
+                'Content-Type':'application/json','x-goog-api-key':api_key}, method='POST')
+            with request.urlopen(req, timeout=120) as res:
+                return json.load(res)
+        try:
+            result = await asyncio.to_thread(call)
+            raw = ''.join(x.get('text','') for x in result['candidates'][0]['content']['parts'])
+            parsed = json.loads(raw)
+            if not isinstance(parsed,dict) or not isinstance(parsed.get('items'),list):
+                raise ValueError('이미지 분석 결과 형식이 올바르지 않습니다.')
+            items=[]
+            for item in parsed['items'][:100]:
+                if not isinstance(item,dict):
+                    continue
+                amount=item.get('amount')
+                items.append({'name':str(item.get('name') or ''),
+                              'amount':amount if type(amount) is int and amount>=0 else None})
+            total=parsed.get('total_amount')
+            if type(total) is not int or total<0:
+                total=None
+            notes=parsed.get('notes',[])
+            if not isinstance(notes,list):
+                notes=[]
+            return {'items':items,'total_amount':total,
+                    'notes':[str(x) for x in notes[:30]],'original_text':text}
+        except error.HTTPError as exc:
+            raise HTTPException(502, f'Gemini 이미지 분석 실패 ({exc.code}): {exc.read(1000).decode("utf-8","replace")}') from exc
+        except Exception as exc:
+            raise HTTPException(502, f'이미지 분석 결과 처리 실패: {exc}') from exc
+
+    @router.post('/api/receipts/multimodal-confirm')
+    async def confirm_image(body: ConfirmedImage):
+        # Only the user-reviewed evidence reaches the unchanged text parser.
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport,base_url='http://localhost',timeout=150) as client:
+            res=await client.post('/api/sessions',json={
+                'text':body.text.strip() or '첨부 이미지에 기록된 결제 내역을 정산해 줘.',
+                'supplied_evidence':body.reviewed_text})
+        try:
+            payload=res.json()
+        except ValueError:
+            raise HTTPException(502, f'기존 파서 응답 오류: HTTP {res.status_code}')
+        if res.status_code>=400:
+            raise HTTPException(res.status_code,payload.get('detail',payload) if isinstance(payload,dict) else payload)
+        return payload
 
     @router.post('/api/sessions/multimodal')
     async def analyze_image(file: UploadFile = File(...), text: str = Form('')):

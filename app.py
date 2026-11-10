@@ -77,7 +77,7 @@ def create_app(db_path=None, parser=None, ocr=None):
         allow_origins=[
             "http://localhost:8081",
             "http://127.0.0.1:8081",
-            "http://172.21.89.98:8081",
+            "http://172.16.51.140:8081",
         ],
         allow_credentials=True,
         allow_methods=["*"],
@@ -93,7 +93,7 @@ def create_app(db_path=None, parser=None, ocr=None):
         allowed_hosts=[
         "localhost",
         "127.0.0.1",
-        "172.21.89.98",
+        "172.16.51.140",
     ],
     )
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
@@ -220,8 +220,35 @@ def create_app(db_path=None, parser=None, ocr=None):
         require_session(sid)
         return store.calculate(sid, body.confirmation_id)
 
+    # 기존 영수증 라우터
     app.include_router(receipt_router(store, parse, ROOT, ocr=ocr))
+
+    # Gemini 멀티모달 라우터
+    from backend.multimodal_router import make_multimodal_router
+
+    multimodal_router = make_multimodal_router(app)
+
+    print("[DEBUG] app type:", type(app))
+    print("[DEBUG] app.router type:", type(app.router))
+    print("[DEBUG] app.include_router:", app.include_router)
+    print("[DEBUG] routes before:", len(app.routes))
+
+    app.include_router(multimodal_router)
+
+    print("[DEBUG] routes after:", len(app.routes))
+    print("[DEBUG] app.routes is app.router.routes:",
+          app.routes is app.router.routes)
+
+    for route in app.routes:
+        print(
+            "[APP ROUTE]",
+            getattr(route, "path", None),
+            getattr(route, "methods", None),
+            type(route).__name__
+        )
+
     return app
+
 
 
 app = create_app(os.getenv("SETTLEMENT_DB_PATH"))

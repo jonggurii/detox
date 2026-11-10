@@ -1,3 +1,5 @@
+import { File } from 'expo-file-system';
+
 export type Json = Record<string, any>;
 export type Issue = {code: string; path: string; question: string};
 export type Revision = {input_revision: number; context: Json; issues: Issue[]};
@@ -44,15 +46,199 @@ export const receiptApi={
 };
 
 // 이미지와 자연어를 함께 보내는 멀티모달 분석 API (별도 백엔드 라우터 필요)
-export async function analyzeImage(image:{uri:string;mimeType:string;name:string},text:string):Promise<Session>{
- if(!BASE)throw new Error('EXPO_PUBLIC_API_URL이 설정되지 않았어요.');
- const form=new FormData();
- form.append('file',{uri:image.uri,name:image.name,type:image.mimeType} as any);
- form.append('text',text);
- const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),180000);
- try{const res=await fetch(BASE+'/api/sessions/multimodal',{method:'POST',body:form,signal:controller.signal});
- const raw=await res.text();let data:any;try{data=JSON.parse(raw);}catch{data=raw;}
- if(!res.ok)throw new Error(typeof data?.detail==='string'?data.detail:JSON.stringify(data?.detail||data));
- return data as Session;
- }catch(e:any){if(e?.name==='AbortError')throw new Error('사진 분석 시간이 초과됐어요. 서버 로그를 확인해 주세요.');throw e;}finally{clearTimeout(timer);}
+export async function analyzeImage(
+  image: {
+    uri: string;
+    mimeType: string;
+    name: string;
+  },
+  text: string
+): Promise<Session> {
+
+  if (!BASE) {
+    throw new Error('EXPO_PUBLIC_API_URL이 설정되지 않았어요.');
+  }
+
+  // 1. 이미지 정보 확인
+  console.log('[IMAGE DEBUG]', {
+    uri: image.uri,
+    name: image.name,
+    mimeType: image.mimeType,
+    uriType: typeof image.uri,
+    nameType: typeof image.name,
+    mimeTypeType: typeof image.mimeType,
+  });
+
+  // 2. FormData 생성
+  const form = new FormData();
+
+  const file = {
+    uri: image.uri,
+    name: image.name || 'receipt.jpg',
+    type: image.mimeType || 'image/jpeg',
+  };
+
+  console.log('[UPLOAD FILE]', file);
+
+  // 3. 이미지 및 사용자 텍스트 추가
+  form.append('file', file as any);
+  form.append('text', String(text ?? ''));
+
+  // 4. FormData 내부 구조 확인
+  console.log('[FORM DEBUG]', (form as any)._parts);
+
+  // 5. 요청 제한 시간: 180초
+  const controller = new AbortController();
+
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, 180000);
+
+  try {
+    console.log('[UPLOAD START]', BASE + '/api/sessions/multimodal');
+
+    // 6. 백엔드로 이미지와 텍스트 전송
+    const res = await fetch(
+      BASE + '/api/sessions/multimodal',
+      {
+        method: 'POST',
+        body: form,
+        signal: controller.signal,
+      }
+    );
+
+    console.log('[UPLOAD STATUS]', res.status);
+
+    // 7. 서버 응답 확인
+    const raw = await res.text();
+
+    let data: any;
+
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = raw;
+    }
+
+    if (!res.ok) {
+      throw new Error(
+        typeof data?.detail === 'string'
+          ? data.detail
+          : JSON.stringify(data?.detail || data)
+      );
+    }
+
+    console.log('[UPLOAD SUCCESS]');
+
+    return data as Session;
+
+  } catch (e: any) {
+
+    // 8. 오류 메시지 출력
+    console.error('[UPLOAD ERROR]', e);
+
+    if (e?.name === 'AbortError') {
+      throw new Error(
+        '사진 분석 시간이 초과됐어요. 서버 로그를 확인해 주세요.'
+      );
+    }
+
+    throw e;
+
+  } finally {
+    clearTimeout(timer);
+  }
 }
+
+export type ImagePreview={items:Array<{name:string;amount:number|null}>;total_amount:number|null;notes:string[];original_text:string};
+export async function previewImage(
+  image: {
+    uri: string;
+    mimeType: string;
+    name: string;
+  },
+  text: string
+): Promise<ImagePreview> {
+  if (!BASE) {
+    throw new Error('EXPO_PUBLIC_API_URL을 설정하세요.');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 180000);
+
+  try {
+    console.log('[PREVIEW 1] 로컬 파일 생성 시작');
+
+    // Expo FileSystem의 File 객체 사용
+    const file = new File(image.uri);
+
+    if (!file.exists) {
+      throw new Error('선택한 사진 파일이 존재하지 않습니다.');
+    }
+
+    console.log('[PREVIEW 2] 파일 확인', {
+      name: file.name,
+      size: file.size,
+      type: file.type,
+    });
+
+    // Expo File은 Blob 기반 파일 객체
+    const form = new FormData();
+
+    form.append(
+      'file',
+      file,
+      image.name || file.name
+    );
+
+    form.append('text', String(text ?? ''));
+
+    console.log('[PREVIEW 3] FormData 생성 완료');
+
+    const res = await fetch(
+      BASE + '/api/receipts/multimodal-preview',
+      {
+        method: 'POST',
+        body: form,
+        signal: controller.signal,
+      }
+    );
+
+    console.log('[PREVIEW 4] 서버 응답:', res.status);
+
+    const raw = await res.text();
+
+    let body: any;
+
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = raw;
+    }
+
+    if (!res.ok) {
+      throw new Error(
+        typeof body?.detail === 'string'
+          ? body.detail
+          : JSON.stringify(body?.detail || body)
+      );
+    }
+
+    console.log('[PREVIEW 5] 분석 성공');
+
+    return body as ImagePreview;
+
+  } catch (e: any) {
+    console.error('[PREVIEW ERROR]', e);
+
+    if (e?.name === 'AbortError') {
+      throw new Error('사진 분석 시간이 초과됐어요.');
+    }
+
+    throw e;
+
+  } finally {
+    clearTimeout(timer);
+  }
+}
+export const confirmImage=(text:string,reviewed_text:string)=>request<Session>('/api/receipts/multimodal-confirm','POST',{text,reviewed_text});
