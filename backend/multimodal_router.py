@@ -109,7 +109,7 @@ def make_multimodal_router(app):
         data = await file.read(8 * 1024 * 1024 + 1)
         if not data or len(data) > 8 * 1024 * 1024:
             raise HTTPException(413, '사진은 8MB 이하로 첨부해 주세요.')
-        model = os.getenv('GEMINI_MULTIMODAL_MODEL', 'gemini-2.5-flash')
+        model = os.getenv('GEMINI_MULTIMODAL_MODEL', 'gemini-3.5-flash')
         prompt = (
             '당신은 모임 정산 정보를 추출하는 도우미입니다. 이미지와 사용자 설명을 함께 읽고 '
             '이미지에 보이는 결제 금액, 메뉴, 영수증 합계, 날짜 및 사용자 설명의 참여자, 차수, '

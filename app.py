@@ -19,7 +19,6 @@ from settlements.parser import (
 )
 from settlements.workflow_store import WorkflowError, WorkflowStore
 from settlements.calculator import CalculationError
-from settlements.receipt_api import receipt_router
 
 from backend.multimodal_router import make_multimodal_router
 
@@ -92,12 +91,9 @@ def create_app(db_path=None, parser=None, ocr=None):
 
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=[
-            "localhost",
-            "127.0.0.1",
-            "172.16.51.140",
-        ],
+        allowed_hosts=allowed_hosts,
     )
+
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
     parse = parser or parse_and_review
 
@@ -240,32 +236,8 @@ def create_app(db_path=None, parser=None, ocr=None):
         require_session(sid)
         return store.calculate(sid, body.confirmation_id)
 
-    # 기존 영수증 라우터
-    app.include_router(receipt_router(store, parse, ROOT, ocr=ocr))
-
     # Gemini 멀티모달 라우터
-    from backend.multimodal_router import make_multimodal_router
-
-    multimodal_router = make_multimodal_router(app)
-
-    print("[DEBUG] app type:", type(app))
-    print("[DEBUG] app.router type:", type(app.router))
-    print("[DEBUG] app.include_router:", app.include_router)
-    print("[DEBUG] routes before:", len(app.routes))
-
-    app.include_router(multimodal_router)
-
-    print("[DEBUG] routes after:", len(app.routes))
-    print("[DEBUG] app.routes is app.router.routes:",
-          app.routes is app.router.routes)
-
-    for route in app.routes:
-        print(
-            "[APP ROUTE]",
-            getattr(route, "path", None),
-            getattr(route, "methods", None),
-            type(route).__name__
-        )
+    app.include_router(make_multimodal_router(app))
 
     return app
 
