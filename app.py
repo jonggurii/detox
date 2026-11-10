@@ -92,7 +92,11 @@ def create_app(db_path=None, parser=None, ocr=None):
 
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=allowed_hosts,
+        allowed_hosts=[
+            "localhost",
+            "127.0.0.1",
+            "172.16.51.140",
+        ],
     )
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
     parse = parser or parse_and_review
