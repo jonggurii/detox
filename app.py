@@ -22,6 +22,8 @@ from settlements.receipt_api import receipt_router
 
 from backend.multimodal_router import make_multimodal_router
 
+from fastapi.middleware.cors import CORSMiddleware
+
 ROOT = Path(__file__).resolve().parent
 
 
@@ -70,6 +72,18 @@ def create_app(db_path=None, parser=None, ocr=None):
     "testserver",
     ]
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:8081",
+            "http://127.0.0.1:8081",
+            "http://172.21.89.98:8081",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     dev_host = os.getenv("SETTLEMENT_DEV_HOST")
     if dev_host:
         allowed_hosts.append(dev_host)
@@ -79,7 +93,7 @@ def create_app(db_path=None, parser=None, ocr=None):
         allowed_hosts=[
         "localhost",
         "127.0.0.1",
-        "192.168.0.27",
+        "172.21.89.98",
     ],
     )
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
