@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>영수증 읽기 · 모아정산</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f7f2;color:#173a38;font:15px/1.6 system-ui,-apple-system,"Malgun Gothic",sans-serif}
+main{max-width:1080px;margin:auto;padding:30px 20px}h1{margin:16px 0 8px}h2{font-size:19px;margin:0 0 12px}a{color:#176858;font-weight:650}
+section{background:white;border:1px solid #dce6df;border-radius:16px;padding:22px;margin:18px 0}
+.grid{display:grid;grid-template-columns:1fr 1.15fr;gap:24px}img{max-width:100%;max-height:600px;object-fit:contain;border:1px solid #e4ece6;border-radius:10px}
+label{display:block;margin:10px 0;font-size:14px}input:not([type=checkbox]),select,textarea{width:100%;padding:9px 11px;border:1px solid #bbcfc4;border-radius:8px;font:inherit}
+button{padding:10px 16px;border:1px solid #176858;border-radius:9px;background:#176858;color:white;font:inherit;font-weight:650;cursor:pointer;margin:6px 8px 6px 0}
+button.secondary{background:white;color:#173a38;border-color:#b4cdbd}button.mini{padding:6px 11px;font-size:13px;margin:0}
+button:disabled{opacity:.5;cursor:not-allowed}.muted{color:#66796f;font-size:13px;margin:6px 0}
+#notice{white-space:pre-wrap;background:#fff3dc;padding:12px 15px;border-radius:10px;margin:12px 0}#notice:empty{display:none}
+table{width:100%;border-collapse:collapse;margin:10px 0}th,td{padding:8px 6px;border-bottom:1px solid #e3ece6;text-align:left}th{font-size:13px;color:#5c7068}
+.total-box{display:grid;grid-template-columns:1fr 180px;gap:12px;align-items:center;background:#f1f6ee;padding:12px;border-radius:10px;margin-top:12px;font-weight:700}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.low{color:#a04413}
+[hidden]{display:none!important}@media(max-width:780px){.grid,.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<a href="/">← 정산 화면으로 돌아가기</a>
+<h1>영수증으로 품목·금액 채우기</h1>
+<p class="muted">PaddleOCR가 읽은 품목과 금액을 표에 먼저 채워 드려요. 잘못 읽힌 숫자만 고치고 바로 정산하거나, 필요할 때만 AI 조건 입력으로 넘길 수 있어요.</p>
+
+<section>
+<label>영수증 사진 선택 <input id="file" type="file" accept="image/jpeg,image/png"></label>
+<p class="muted">JPG·PNG (10MB 이하). 글자가 정면을 향한 선명한 사진을 올려 주세요.</p>
+<button id="upload">영수증 인식하기</button>
+</section>
+
+<p id="notice" role="status" aria-live="polite"></p>
+
+<section id="review" hidden>
+<div class="grid">
+  <div>
+    <h2>1. 영수증 사진</h2>
+    <a id="imageLink" target="_blank" rel="noopener"><img id="image" alt="업로드한 영수증"></a>
+    <p class="muted">사진을 클릭하면 원본 크기로 볼 수 있어요.</p>
+    <details>
+      <summary class="muted" style="cursor:pointer">OCR 원문 및 인식 점수 보기</summary>
+      <pre id="rawText" style="white-space:pre-wrap"></pre><ul id="blocks" class="muted"></ul>
+    </details>
+  </div>
+
+  <div>
+    <h2>2. 인식한 품목·금액 확인 및 수정</h2>
+    <p class="muted">잘못 인식된 품목명이나 금액을 바로 수정하세요. 전화번호나 부가세가 들어갔다면 삭제해 주세요.</p>
+    <table>
+      <thead><tr><th>품목</th><th style="width:150px">인식한 금액(원)</th><th style="width:64px"></th></tr></thead>
+      <tbody id="itemsBody"></tbody>
+    </table>
+    <button id="addItemBtn" type="button" class="secondary mini">＋ 품목 추가</button>
+    
+
+    <div class="total-box">
+      <label for="totalAmount">실제 결제 총액 (원)</label>
+      <input id="totalAmount" type="text" inputmode="numeric" placeholder="합계 금액">
+    </div>
+    <label>영수증에 표시된 총액 (원)<input id="receiptTotal" type="text" inputmode="numeric" placeholder="읽지 못했으면 비워 두세요"></label><p id="sumHint" class="muted"></p><details open><summary>총액 후보·자동 입력하지 않은 줄</summary><pre id="candidates" style="white-space:pre-wrap"></pre></details><label>할인·누락 등 확인 메모<textarea id="receiptNote" maxlength="2000"></textarea></label>
+
+    <hr style="border:0;border-top:1px solid #dce6df;margin:18px 0">
+    <h2>3. 기본 정산 정보 (선택)</h2>
+    <p class="muted">지금 입력하면 다음 정산 화면에 참여자와 결제자가 바로 채워져요.</p>
+    <div class="two">
+      <label>비용 분담 대상자 (쉼표로 구분)<input id="participants" placeholder="예: 민수, 지수, 도윤"></label>
+      <label>먼저 결제한 사람 (미정이면 비워 두세요)<input id="payer" placeholder="예: 민수" maxlength="100"></label>
+    </div>
+    <label>분담 방식<select id="splitMethod"><option value="">미정 — 다음 화면에서 선택</option><option value="equal">입력한 대상자가 모든 품목 균등 분담</option><option value="explicit_amount">개인별 금액 지정 — 다음 화면에서 금액 입력</option></select></label><label>사진 대조 담당자<input id="receiptReviewer" maxlength="100" placeholder="실제로 확인한 사람"></label><label><input id="checked" type="checkbox"> 사진과 품목·금액을 대조해 확인했어요.</label>
+
+    <div style="margin-top:16px">
+      <button id="settleNowBtn" type="button">이 내용으로 정산하기</button>
+      <button id="copyTextBtn" type="button" class="secondary">텍스트 복사</button>
+      <button id="sendToAiBtn" type="button" class="secondary">AI로 조건 추가하기</button>
+    </div>
+    <p class="muted">• <b>이 내용으로 정산하기</b>: Gemini 호출 없이 정산 화면에 품목·금액을 바로 반영해요.<br>• <b>AI로 조건 추가하기</b>: 수정한 품목·금액을 AI 입력창에 미리 채워 두고 복잡한 예외만 문장으로 덧붙여요.</p>
+    <textarea id="copyFallback" aria-label="복사할 텍스트" rows="6" readonly hidden></textarea><p id="linked" hidden><a id="openSession">이미 연결된 정산 열기 →</a></p>
+  </div>
+</div>
+</section>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+let receipt=null,rows=[],busy=false,dirty=false;
+const money=n=>n===null?'미정':new Intl.NumberFormat('ko-KR').format(n)+'원';
+function amount(value){const s=String(value??'').trim();if(!s)return null;if(!/^(?:0|[1-9][0-9]*|[1-9][0-9]{0,2}(?:,[0-9]{3})+)$/.test(s))throw Error('금액은 0 이상의 원 단위 정수로 입력하세요. 빈칸은 미정이에요.');const n=Number(s.replaceAll(',',''));if(!Number.isSafeInteger(n))throw Error('금액이 정확히 처리할 수 있는 범위를 넘었어요.');return n;}
+function people(value){const s=value.trim();if(!s)return [];const names=s.split(/[,，]/).map(x=>x.trim());if(names.some(x=>!x||x.length>100)||names.length>100||new Set(names).size!==names.length)throw Error('분담 대상자의 빈 이름·중복 이름·길이를 확인해 주세요.');return names;}
+async function api(url,options={}){const r=await fetch(url,options);const d=await r.json();if(!r.ok)throw Error(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail||d));return d;}
+async function run(action){if(busy)return;busy=true;document.querySelectorAll('button,input,select,textarea').forEach(e=>e.disabled=true);try{await action();}catch(e){$('notice').textContent=e.message;}finally{busy=false;document.querySelectorAll('button,input,select,textarea').forEach(e=>e.disabled=false);}}
+function changed(){dirty=true;$('checked').checked=false;updateSum();}
+function updateSum(){try{const amounts=rows.map(r=>amount(r.amount));const sum=amounts.some(a=>a===null)?null:amounts.reduce((a,b)=>a+b,0);if(sum!==null&&!Number.isSafeInteger(sum))throw Error('품목 합계가 안전한 정수 범위를 넘었어요.');const total=amount($('totalAmount').value),printed=amount($('receiptTotal').value);$('sumHint').textContent=`품목 합계: ${rows.length?money(sum):'품목 없음'} / 실제 결제: ${money(total)} / 영수증 총액: ${money(printed)}. 총액은 자동으로 맞추지 않아요.`;}catch(e){$('sumHint').textContent=e.message;}}
+function renderRows(){$('itemsBody').replaceChildren();rows.forEach((row,index)=>{const tr=document.createElement('tr');const name=document.createElement('input');name.value=row.name??'';name.maxLength=200;name.placeholder='품목명 미정';name.setAttribute('aria-label',`품목 ${index+1} 이름`);name.oninput=()=>{row.name=name.value;changed();};const price=document.createElement('input');price.type='text';price.inputMode='numeric';price.value=row.amount??'';price.placeholder='금액 미정';price.setAttribute('aria-label',`품목 ${index+1} 금액`);price.oninput=()=>{row.amount=price.value;changed();};const del=document.createElement('button');del.type='button';del.className='secondary mini';del.textContent='삭제';del.onclick=()=>{rows.splice(index,1);changed();renderRows();};for(const child of [name,price,del]){const td=document.createElement('td');td.append(child);tr.append(td);}$('itemsBody').append(tr);});updateSum();}
+function payload(check=true){if(!receipt)throw Error('먼저 영수증을 올려 주세요.');if(check&&!$('checked').checked)throw Error('현재 사진과 입력값을 대조한 뒤 확인해 주세요.');const reviewer=$('receiptReviewer').value.trim();if(check&&!reviewer)throw Error('사진을 대조한 담당자를 입력해 주세요.');const items=rows.map(r=>({name:r.name.trim()||null,amount:amount(r.amount)}));const sum=items.reduce((s,i)=>s+(i.amount??0),0);if(!Number.isSafeInteger(sum))throw Error('품목 합계가 안전한 정수 범위를 넘었어요.');return {expected_review_revision:receipt.review_revision??0,reviewed_by:reviewer,image_checked:$('checked').checked,items,total_amount:amount($('totalAmount').value),receipt_total_amount:amount($('receiptTotal').value),participants:people($('participants').value),payer_name:$('payer').value.trim()||null,split_method:$('splitMethod').value||null,note:$('receiptNote').value};}
+function editedText(){const p=payload(false);const lines=['[사용자가 수정한 영수증 입력]',...p.items.map((i,n)=>`품목 ${n+1}: ${i.name??'품목명 미정'} / 항목 전체 금액: ${money(i.amount)}`),`영수증에 표시된 총액: ${money(p.receipt_total_amount)}`,`사용자가 입력한 실제 결제 총액: ${money(p.total_amount)}`];if(p.note.trim())lines.push('추가 확인 메모: '+p.note.trim());return lines.join('\n');}
+function display(doc){receipt=doc;dirty=false;$('review').hidden=false;$('image').src=`/api/receipts/${doc.receipt_id}/image`;$('imageLink').href=$('image').src;const saved=doc.review||{},fields=doc.fields||{};const has=k=>Object.prototype.hasOwnProperty.call(saved,k);rows=(has('items')?(Array.isArray(saved.items)?saved.items:[]):fields.items||[]).map(i=>({name:i.name??'',amount:i.amount===null?'':String(i.amount)}));$('totalAmount').value=(has('total_amount')?saved.total_amount:fields.total_amount)??'';$('receiptTotal').value=(has('receipt_total_amount')?saved.receipt_total_amount:fields.total_amount)??'';$('participants').value=(saved.participants||[]).join(', ');$('payer').value=saved.payer_name??'';$('splitMethod').value=saved.split_method??'';$('receiptReviewer').value=saved.reviewed_by??'';$('receiptNote').value=saved.note??'';$('checked').checked=false;renderRows();$('rawText').textContent=doc.ocr?.text||'(인식한 글자 없음)';$('blocks').replaceChildren();for(const b of doc.ocr?.blocks||[]){const li=document.createElement('li');li.textContent=`${b.needs_review?'[검수 필요] ':''}${b.text} (점수 ${Number(b.score).toFixed(3)})`;if(b.needs_review)li.className='low';$('blocks').append(li);}$('candidates').textContent=[...(fields.warnings||[]),...(fields.total_candidates||[]).map(c=>'총액 후보: '+c.source),...(fields.unparsed_lines||[]).map(t=>'직접 확인: '+t)].join('\n')||'추가 표시 없음. 원본 사진은 모두 확인해 주세요.';$('notice').textContent=doc.warning||'후보를 채웠어요. 누락·할인·수량·총액을 사진과 대조해 주세요.';$('linked').hidden=!doc.session_id;if(doc.session_id){$('openSession').href='/?session_id='+encodeURIComponent(doc.session_id);$('notice').textContent='이미 정산에 연결한 영수증이에요. 변경은 연결한 정산 화면에서 진행하세요.';}}
+$('addItemBtn').onclick=()=>{rows.push({name:'',amount:''});changed();renderRows();};
+for(const id of ['totalAmount','receiptTotal','participants','payer','splitMethod','receiptReviewer','receiptNote'])$(id).addEventListener('input',changed);
+$('upload').onclick=()=>run(async()=>{if(dirty&&!confirm('저장하지 않은 영수증 수정을 버리고 새 사진을 올릴까요?'))return;const file=$('file').files[0];if(!file)throw Error('사진을 선택해 주세요.');if(file.size>10*1024*1024)throw Error('10MB 이하 사진을 선택해 주세요.');const data=new FormData();data.append('file',file);$('notice').textContent='영수증을 읽고 있어요. 첫 실행은 모델 다운로드가 필요해요.';const doc=await api('/api/receipts',{method:'POST',body:data});display(doc);window.history.replaceState(null,'','/receipts/new?receipt_id='+doc.receipt_id);});
+$('copyTextBtn').onclick=()=>run(async()=>{const text=editedText();try{await navigator.clipboard.writeText(text);$('notice').textContent='수정한 텍스트를 복사했어요.';}catch{$('copyFallback').hidden=false;$('copyFallback').value=text;$('copyFallback').disabled=false;$('copyFallback').select();$('notice').textContent='자동 복사를 허용하지 않아 아래 텍스트를 표시했어요. 직접 복사해 주세요.';}});
+$('settleNowBtn').onclick=()=>run(async()=>{const data=payload();const session=await api(`/api/receipts/${receipt.receipt_id}/draft`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});dirty=false;location.href='/?session_id='+encodeURIComponent(session.session_id);});
+$('sendToAiBtn').onclick=()=>run(async()=>{const data=payload();const saved=await api(`/api/receipts/${receipt.receipt_id}/review`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});dirty=false;location.href='/?mode=ai&receipt_id='+encodeURIComponent(saved.receipt_id);});
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+const rid=new URLSearchParams(location.search).get('receipt_id');if(rid)run(async()=>display(await api('/api/receipts/'+encodeURIComponent(rid))));
+</script></body></html>
