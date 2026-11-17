@@ -48,7 +48,7 @@
 
 | 구분 | 확인한 근거 | 판정 |
 |---|---|---|
-| 자연어 파싱·검토 | `src/settlements/parser.py`, 스키마, `tests/test_parser.py`, 기존 골든 테스트 | 코드/결정적 테스트 존재; 
+| 자연어 파싱·검토 | `src/settlements/parser.py`, 스키마, `tests/test_parser.py`, 기존 골든 테스트 | 코드/결정적 테스트 존재; |
 | 영수증 이미지 추출 | `receipt_reader.py`, `receipt_api.py`, `backend/multimodal_router.py`, `tests/test_multimodal_integration.py` | API 경로와 모의 이미지 추출 검증; |
 | Python 정산 | `calculator.py`, `allocation_math.py`, 정산·회귀 테스트 | 결정적 계산 구현/검사 존재 |
 | 검토·승인·수정 | `workflow_store.py`, `tests/test_web_api.py` | 버전/승인 ID/반복 계산 경로 테스트 존재 |
