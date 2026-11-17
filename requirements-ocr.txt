@@ -1,4 +1,3 @@
+# 이전 설치 명령과의 호환. 이미지 추출은 Gemini SDK를 사용한다.
 -r requirements-web.txt
-paddleocr==3.3.0
 Pillow>=11,<13
-python-multipart>=0.0.20,<1

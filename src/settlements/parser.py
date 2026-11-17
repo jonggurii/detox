@@ -1,6 +1,7 @@
 """추출, 로컬 스키마 검증, 입력 검토. 사용자 확인은 별도 단계다."""
 from collections import Counter, defaultdict
 from functools import lru_cache
+from .gemini_client import get_client, get_model
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
@@ -195,27 +196,12 @@ def load_contract():
     return prompt, schema, int(version.group(1)), digest
 
 
-@lru_cache(maxsize=1)
 def _client():
-    # 검토 함수만 사용할 때 Gemini SDK나 API 키가 필요하지 않다.
-    from dotenv import load_dotenv
-    from google import genai
-
-    load_dotenv(
-    BASE_DIR.parent.parent / ".env",
-    override=False
-    )
-
-    key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not key:
-        raise ParserConfigurationError(
-            "GEMINI_API_KEY를 설정해 주세요."
-        )
-
-    return genai.Client(
-        api_key=key,
-        http_options={"timeout": 60000, "retry_options": {"attempts": 1}},
-    )
+    # 테스트 및 파서 검토에서 import 시점에 SDK를 요구하지 않는다.
+    try:
+        return get_client()
+    except RuntimeError as exc:
+        raise ParserConfigurationError(str(exc)) from exc
 
 
 def _generation_schema(schema):
@@ -366,7 +352,7 @@ def parse_and_review(
     if client is None:
         client = _client()
 
-    selected = model or os.getenv("GEMINI_MODEL", "").strip()
+    selected = model or get_model()
     if not selected:
         raise ParserConfigurationError(
             "GEMINI_MODEL을 설정해 주세요."
@@ -384,8 +370,7 @@ def parse_and_review(
 
     for attempt in (1, 2):
         # Temporary Gemini failures should not discard reviewed receipt data.
-        fallback = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
-        models = [selected] + ([fallback] if fallback and fallback != selected else [])
+        models = [selected]
         last_exc = None
         response = None
         for model_name in models:

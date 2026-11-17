@@ -1,7 +1,6 @@
 # Smart Settlement Agent — 계산 전 입력 검토 골든 케이스
 # 저장 위치 제안: tests/harness/golden_cases.yaml
 # 연결된 수용 기준: docs/AC.md (원 기준: SPEC.md v1.1, 6.2~6.4)
-# 상태: 팀 검토용 초안. 작성일: 2026-10-28
 # SPEC의 8개 입력·기대값·기존 영문 이름을 변경하지 않고 별도 파일로 분리했다.
 # 모든 사람·금액 조합은 테스트용 가상 사례다.
 #

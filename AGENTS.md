@@ -13,7 +13,7 @@
 - **LLM 역할:** 화면·원문에서 정보 후보를 **추출**하고, 송금 안내 문장을 **확정 결과에 근거해 작성**한다.
 - **Python 역할:** 구조/의미 검증, 사용자 승인 게이트, 정확한 원 단위 비용 계산, 멱등성 및 상태 전이.
 - **사람 역할:** 읽을 수 없는 영수증·불명확한 대상·예외·잔액 부담·최종 정산 내용을 검토하고 승인한다.
-- 영수증 인식과 자연어 파싱은 **`GEMINI_MODEL=gemini-3.8-flash` 단일 모델 설정**으로 통합할 계획이다. 구현 시 실제 모델 접근·SDK 지원 여부를 확인한다. 실시간 음성 Live API는 현 범위가 아니다.
+- 영수증 인식과 자연어 파싱은 **`GEMINI_MODEL=gemini-3.5-flash` 단일 모델 설정**을 사용한다. 텍스트·이미지 모델 요청은 같은 SDK 클라이언트를 사용한다. 실제 API 키와 계정 접근 권한은 별도 확인한다. 실시간 음성 Live API는 현 범위가 아니다.
 
 ## 2. 상시 로드 핵심 용어집 — 8개 클래스
 
@@ -60,9 +60,9 @@
 
 | 역할 | 대상 파일 | 원칙 |
 |---|---|---|
-| 공통 Gemini | `src/settlements/gemini_client.py` (추가 예정) | 모델명/키/호출 오류 처리 공유, 호출부 일원화 |
+| 공통 Gemini | `src/settlements/gemini_client.py` | 모델명/키/호출 오류 처리 공유, 호출부 일원화 |
 | 자연어 파싱 | `src/settlements/parser.py` | 기존 스키마 9필드에 맞춰 추출; `review_context` 인터페이스/테스트 보존 |
-| 영수증 인식 | `src/settlements/receipt_reader.py` (추가 예정), 기존 `receipt_ocr.py` | 기존 사용처 점검 후 교체 또는 호환 래퍼 선택 |
+| 영수증 인식 | `src/settlements/receipt_reader.py` (PaddleOCR 제거) | 기존 사용처 점검 후 교체 또는 호환 래퍼 선택 |
 | 이미지 API | `src/settlements/receipt_api.py` | 업로드/전처리·원본 저장·리뷰 단계·오류 계약 보존 |
 | 추출 정규화 | `receipt_fields.py`, `receipt_draft.py` | 모델 환각/타입 오류 검증, 사용자 검토 결과 보호 |
 | 계산 | `calculator.py`, `allocation_math.py` | LLM 배제, 원화 정수 산술/잔액 및 합계 검증 |
@@ -105,7 +105,7 @@ python -m pytest tests -v
 # app.py가 tests/에 있다면 실제 import 관계에 맞춰 변경한다.
 ```
 
-`requirements-web.txt`, `requirements-ocr.txt`, `app.py`는 사용자 제공 트리에서 `tests/` 아래에 있다. **파일을 확인하기 전** 루트에 있는 것처럼 설치/기동 명령을 단정하지 않는다. `--reload`는 개발용으로만 사용한다.
+`requirements.txt`, `requirements-web.txt`, `requirements-ocr.txt`, `app.py`는 저장소 루트에 있다. `tests/app.py`는 별도 테스트용 앱이다. `--reload`는 개발용으로만 사용한다.
 
 ## 8. 응답 및 보고 지침
 

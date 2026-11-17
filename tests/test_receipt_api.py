@@ -7,7 +7,7 @@ from PIL import Image
 
 from app import create_app
 from settlements.parser import ParserAPIError, load_contract, validate_context_data
-from settlements.receipt_ocr import OCRError
+from settlements.receipt_reader import ReceiptExtractionError
 
 
 def context():
@@ -137,9 +137,9 @@ def test_payer_is_not_filled_by_receipt_route(tmp_path):
         assert confirmation(c, doc["session_id"]).status_code == 409
 
 
-def test_ocr_failure_keeps_image_for_manual_reading(tmp_path):
+def test_gemini_failure_keeps_image_for_manual_reading(tmp_path):
     def fail(_):
-        raise OCRError("OCR 설치를 확인해 주세요.")
+        raise ReceiptExtractionError("Gemini 인식에 실패했습니다.")
     with TestClient(create_app(tmp_path / "test.db", parser=make_parser([]), ocr=SimpleNamespace(read=fail))) as c:
         rid = upload(c)
         assert c.get(f"/api/receipts/{rid}").json()["warning"]

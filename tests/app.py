@@ -20,7 +20,7 @@ from settlements.workflow_store import WorkflowError, WorkflowStore
 from settlements.calculator import CalculationError
 from settlements.receipt_api import receipt_router
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class Body(BaseModel):
