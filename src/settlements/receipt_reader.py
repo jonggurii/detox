@@ -4,7 +4,11 @@ from pathlib import Path
 import json
 
 from PIL import Image, ImageOps, UnidentifiedImageError
-from .gemini_client import get_client, get_model
+from .gemini_client import (
+    get_client,
+    get_model,
+    get_multimodal_model,
+)
 
 MAX_BYTES = 10 * 1024 * 1024
 MAX_PIXELS = 12_000_000
@@ -119,7 +123,7 @@ class GeminiReceiptReader:
                 # 오프라인 가짜 클라이언트 테스트는 SDK 설치 없이 실행 가능.
                 part = {"inline_data": {"data": buffer.getvalue(), "mime_type": "image/png"}}
             response = (self.client or get_client()).models.generate_content(
-                model=get_model(),
+                model=get_multimodal_model(),
                 contents=[part, PROMPT],
                 config={"temperature": 0, "response_mime_type": "application/json",
                         "response_json_schema": RECEIPT_SCHEMA},

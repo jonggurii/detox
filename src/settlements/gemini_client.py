@@ -12,6 +12,18 @@ def get_model() -> str:
     load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
     return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
 
+def get_multimodal_model() -> str:
+    from dotenv import load_dotenv
+
+    load_dotenv(
+        Path(__file__).resolve().parents[2] / ".env",
+        override=False,
+    )
+
+    return (
+        os.getenv("GEMINI_MULTIMODAL_MODEL")
+        or get_model()
+    ).strip()
 
 @lru_cache(maxsize=1)
 def get_client():
