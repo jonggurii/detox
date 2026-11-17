@@ -4,7 +4,6 @@
 > **도메인 정본:** [`docs/ontology.yaml`](docs/ontology.yaml) (v3.6, 8개 핵심 클래스)  
 > **제품 수용 기준:** [`docs/SPEC.md`](docs/SPEC.md)  
 > **입력 계약:** `src/settlements/schemas/request_context.schema.json`  
-> **상태:** 상시 개발 지침; 실제 코드 동작/테스트 통과 보증이 아님.
 
 ## 1. 프로젝트 정체성
 
