@@ -2,6 +2,8 @@
 from io import BytesIO
 from pathlib import Path
 import json
+import logging
+import time
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from .gemini_client import (
@@ -9,6 +11,8 @@ from .gemini_client import (
     get_model,
     get_multimodal_model,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_BYTES = 10 * 1024 * 1024
 MAX_PIXELS = 12_000_000
@@ -99,7 +103,7 @@ def parse_receipt_output(text: str) -> dict:
             warnings.append("품목 합계와 영수증 총액이 다릅니다. 할인·누락·수량을 확인해 주세요.")
     return {"text": "\n".join(lines), "blocks": [], "low_score_count": 0,
             "items": items, "total_amount": total, "raw_lines": lines,
-            "notes": notes, "warnings": list(dict.fromkeys(warnings)), "model": get_model(),
+            "notes": notes, "warnings": list(dict.fromkeys(warnings)), "model": get_multimodal_model(),
             "prompt_version": PROMPT_VERSION}
 
 
@@ -111,24 +115,74 @@ class GeminiReceiptReader:
         return self.extract_bytes(Path(image_path).read_bytes())
 
     def extract_bytes(self, raw: bytes) -> dict:
-        # 이미지 내용 자체 검증: 파일명·Content-Type을 신뢰하지 않는다.
         image = prepare_image(raw)
+
         buffer = BytesIO()
         image.save(buffer, format="PNG")
+
         try:
             if self.client is None:
                 from google.genai import types
-                part = types.Part.from_bytes(data=buffer.getvalue(), mime_type="image/png")
+                part = types.Part.from_bytes(
+                    data=buffer.getvalue(),
+                    mime_type="image/png",
+                )
             else:
-                # 오프라인 가짜 클라이언트 테스트는 SDK 설치 없이 실행 가능.
-                part = {"inline_data": {"data": buffer.getvalue(), "mime_type": "image/png"}}
-            response = (self.client or get_client()).models.generate_content(
-                model=get_multimodal_model(),
-                contents=[part, PROMPT],
-                config={"temperature": 0, "response_mime_type": "application/json",
-                        "response_json_schema": RECEIPT_SCHEMA},
-            )
+                part = {
+                    "inline_data": {
+                        "data": buffer.getvalue(),
+                        "mime_type": "image/png",
+                    }
+                }
+
+            client = self.client or get_client()
+            model = get_multimodal_model()
+
+            for attempt in range(2):
+                try:
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=[part, PROMPT],
+                        config={
+                            "temperature": 0,
+                            "response_mime_type": "application/json",
+                            "response_json_schema": RECEIPT_SCHEMA,
+                        },
+                    )
+                    break
+
+                except Exception as exc:
+                    status = getattr(exc, "code", None)
+
+                    if status is None:
+                        status = getattr(exc, "status_code", None)
+
+                    try:
+                        status = int(status)
+                    except (TypeError, ValueError):
+                        status = None
+
+                    if status not in (429, 503) or attempt == 1:
+                        raise
+
+                    logger.warning(
+                        "Gemini receipt retry: model=%s status=%s attempt=%s",
+                        model,
+                        status,
+                        attempt + 1,
+                    )
+
+                    time.sleep(2 ** attempt)
+
         except Exception as exc:
-            # API 키와 제공자 응답 본문을 사용자에게 노출하지 않는다.
-            raise ReceiptExtractionError("Gemini 영수증 인식에 실패했습니다. 직접 입력해 주세요.") from exc
+            logger.error(
+                "Gemini receipt extraction failed: model=%s error_type=%s status=%s",
+                model,
+                type(exc).__name__,
+                getattr(exc, "code", getattr(exc, "status_code", None)),
+            )
+            raise ReceiptExtractionError(
+                "Gemini 영수증 인식에 실패했습니다. 직접 입력해 주세요."
+            ) from exc
+
         return parse_receipt_output(getattr(response, "text", None))

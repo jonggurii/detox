@@ -55,14 +55,28 @@ def test_transparent_background_becomes_white():
     assert prepare_image(stream.getvalue()).getpixel((0, 0)) == (255, 255, 255)
 
 
-def test_structured_image_extraction_uses_shared_model(monkeypatch):
+def test_structured_image_extraction_uses_multimodal_model(monkeypatch):
+    # 텍스트 분석 모델
     monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash")
+
+    # 영수증 이미지 분석 모델
+    monkeypatch.setenv("GEMINI_MULTIMODAL_MODEL", "gemini-3.8-flash")
+
     client = FakeClient(response())
     result = GeminiReceiptReader(client=client).extract_bytes(photo())
+
+    # 1. 영수증 분석 결과 검증
     assert result["items"] == [{"name": "식사", "amount": 10000}]
     assert result["total_amount"] == 10000
-    assert result["low_score_count"] == 0  # Gemini는 OCR 인식 점수를 제공하지 않음
-    assert client.requests[0]["model"] == "gemini-3.5-flash"
+
+    # 2. 기존 인터페이스 호환성 검증
+    assert result["low_score_count"] == 0
+
+    # 3. 멀티모달 모델 사용 여부 검증
+    assert client.requests[0]["model"] == "gemini-3.8-flash"
+    assert result["model"] == "gemini-3.8-flash"
+
+    # 4. JSON 구조화 출력 설정 검증
     assert client.requests[0]["config"]["response_mime_type"] == "application/json"
     assert "response_json_schema" in client.requests[0]["config"]
 
