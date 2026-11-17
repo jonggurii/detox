@@ -42,7 +42,7 @@
 ### C. 개발 환경에서 실행 (선택)
 
 저장소: https://github.com/jonggurii/detox  
-교수 평가 기준: **GitHub 기본 브랜치** (사용자 확인: 기존 `SongGeon` 체험 내용과 동일하게 반영됨)
+체험 기준 브랜치: `SongGeon`
 
 **모바일 앱(Windows PowerShell)**
 
@@ -68,45 +68,10 @@ $env:GEMINI_API_KEY="본인의_API_키"
 python -m uvicorn app:app --reload
 ```
 
-**Gemini SDK 설치 및 import 확인 (API 호출 없음)**
-
-```powershell
-# 저장소 루트, 활성화된 .venv에서 실행
-python -m pip install -r requirements.txt
-python scripts/check_gemini_sdk.py
-python -c "from google import genai; print('SDK import OK')"
-```
-
-- 설치 패키지 이름은 `google-genai`, Python import는 `from google import genai`입니다.
-- 위 확인에서 `FAIL`이 나오면 `python -m pip --version`과 `python -c "import sys; print(sys.executable)"`로 동일 가상환경인지 점검합니다.
-- SDK 확인은 API 키의 유효성·모델 접근 권한·과금 여부를 확인하지 않습니다.
-- `test_api.py`는 과거 스키마를 사용하는 **수동 실행용 레거시 데모**이며, 최신 정산 입력 검증은 `src/settlements/parser.py` 및 `tests/`에 있습니다. `test_api.py`의 import 시점에는 SDK·API 키가 필요하지 않습니다.
-
 - API 기본 주소: `http://127.0.0.1:8000`
 - Gemini 기반 분석에는 유효한 API 키가 필요합니다.
 - 개발 환경에서는 `SETTLEMENT_DB_PATH` 등 설정에 따라 데이터 저장 위치가 달라질 수 있습니다.
 - Python 및 Node.js는 프로젝트 의존성에 호환되는 버전을 사용하세요.
-
-## 2단계: Gemini 3.5 Flash 영수증 분석 통일 (2026-11-16)
-
-- `.env.example`에 따라 `GEMINI_API_KEY`를 넣고 `GEMINI_MODEL=gemini-3.5-flash`를 사용하세요.
-- `src/settlements/gemini_client.py`가 텍스트·영수증의 모델 ID와 SDK 클라이언트를 공통 관리합니다.
-- 이미지 업로드는 `src/settlements/receipt_reader.py`에서 JPG/PNG, 10MB, 1200만 화소 검증 후 Gemini 구조화 JSON으로 **품목·금액 후보**만 추출합니다.
-- **PaddleOCR 패키지와 이전 `receipt_ocr.py`는 제거**했습니다. 새 `requirements.txt`와 `requirements-ocr.txt`에는 Paddle 관련 설치가 없습니다.
-- 브라우저: `http://127.0.0.1:8000/receipts/new` → 영수증 업로드 → 이미지·금액 검수 → 직접 초안/AI 조건 확인 → 사용자 승인 → Python 계산.
-- 인식 실패해도 사진은 보존되며 직접 입력 가능. 이미지·텍스트 인식은 모델 호출이지만 정산 합산은 Python에서만 수행합니다.
-- `/api/receipts/multimodal-preview`는 검토 후보만 반환하고, 이전 `/api/sessions/multimodal`도 자동 세션 생성 대신 **검토 후보**를 반환합니다. `/api/receipts/multimodal-confirm`은 검토된 텍스트를 파서에 넘깁니다.
-- 오프라인 가짜 모델 테스트는 `python -m pytest tests -q`로 실행할 수 있지만 **실제 Gemini API 응답과 영수증 정확도를 검증했다는 뜻은 아닙니다.**
-- 현재 `docs/SPEC.md`의 전체 MVP AC·평가 설계 최신화는 3단계에서 수행합니다.
-
-## 중간평가 2: SPEC 및 수용 기준 연결 (3단계, 2026-11-16)
-
-- 제품의 **중간평가 MVP AC**와 구현·검증 상태: [`docs/SPEC.md`](docs/SPEC.md) 3절 및 6절. 기존 입력 검토 골든 G01~G08은 `AC1~AC6`에 연결됩니다.
-- 시나리오 1 **자연어 복합 정산**: `MVP1, MVP5, MVP6, AC1, AC6, CALC1, CLAIM1`. *84,000원/세 명/영희 술값 제외*의 기대값은 32,000원·32,000원·20,000원입니다.
-- 시나리오 2 **영수증 사진 + 설명**: `MVP2, MVP5, EXTRACT1, EXTRACT3, EXTRACT6`. 이미지 품목/금액 정답은 **실제 테스트 이미지에 따라** 정해야 합니다. 검토 전 자동 계산·송금하지 않습니다.
-- 시나리오 3 **직접 N분의 1**: `MVP3, MVP5, MVP6, CALC1, CLAIM1`. *90,000원/3명*이면 각각 30,000원입니다.
-- 시나리오 4 **직접 차액 정산**: `MVP4`. *20,000원 + 15,000원 = 35,000원*을 직접 지정합니다. **현재 모바일 앱 로컬(AsyncStorage) 저장 기능**이며 서버의 승인·Python 계산·기기 간 동기화 기능은 아닙니다.
-- 본 README의 예시 금액은 검증 기준이지만, 실제 **Gemini 이미지·텍스트 인식률**과 **배포 앱 동작**은 별도 실측 대상입니다. Evals는 4단계에서 구축합니다.
 
 ## 3. 핵심 기능 체험 시나리오
 
@@ -317,28 +282,5 @@ N분의 1 정산과 달리 총지출액을 균등 분할하는 것이 아니라 
 - **리뷰 기간:** 2026년 11월 11일 ~ 11월 18일
 - 해당 기간에는 팀에서 웹/API 또는 Android 테스트 환경을 유지하고, 접속 주소나 설치 방법이 바뀌면 이 README를 갱신합니다.
 - 오류 제보 시 사용 환경(Android/웹), 재현 단계, 입력 예시(가상 데이터), 오류 화면을 함께 알려주세요.
-- Contace Line : gun1851@ajou.ac.kr 
 
 ---
-
-## 8. 골든 테스트와 Evals (중간평가 2)
-
-- 설계서: [`evals/EVAL_DESIGN.md`](evals/EVAL_DESIGN.md) — 지표·채점기·추출 정확도 90% 확정 목표·AC 연결
-- 데이터셋: [`evals/evalset.jsonl`](evals/evalset.jsonl) — 총 **35케이스** (자연어 31, 합성 영수증 4, 정상과 실패/경계 범주 포함)
-- 실행기: [`evals/run_evals.py`](evals/run_evals.py) / 결과: `evals/results/` / 실행 이력: `evals/results/history.csv`
-- 위임·검증 기록: [`docs/prompts/delegation_evals.md`](docs/prompts/delegation_evals.md)
-
-PowerShell, **저장소 루트**:
-
-```powershell
-python -m pip install -r requirements.txt
-$env:PYTHONPATH="src"
-python -m pytest tests -q
-# 실제 Gemini API를 호출하지 않는 평가 하니스 재현
-python evals/run_evals.py --mode stored --change "평가 하니스 검증" --golden "pytest 결과 기록"
-# 실제 Gemini 3.5 Flash 모델을 평가할 때만(키·요금·쿼터 필요)
-$env:GEMINI_API_KEY="본인_API_키"
-python evals/run_evals.py --mode live --change "Gemini 최초 베이스라인" --golden "pytest 결과 기록"
-```
-
-**중요:** 저장 출력 모드의 35/35는 모델 정확도가 아닌 **테스트 더블에 대한 채점기/하니스 통과**다. 실제 Gemini 이미지/텍스트 품질은 `live`로 측정해야 한다. **추출 정확도 90% 이상 목표는 2026-11-17 확정**했지만 실제 Gemini 라이브 달성률은 아직 미측정이다. 그 외 절대 규칙의 기대값은 팀 검토 대상이며, 합성 영수증 4개는 실제 촬영 환경 성능을 대표하지 않는다. 직접 차액 정산은 이번 MVP에서 **모바일 로컬 저장**이고 서버 동기화는 후속이다.

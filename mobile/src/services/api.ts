@@ -4,7 +4,7 @@ export type Json = Record<string, any>;
 export type Issue = {code: string; path: string; question: string};
 export type Revision = {input_revision: number; context: Json; issues: Issue[]};
 export type Transfer = {expense_index:number; from_participant:string; to_participant:string; amount:number};
-export type Calculation = {input_revision:number; result:{participant_totals:Record<string,number>; settlements:Transfer[]; allocations:Array<{expense_index:number;item_index:number;participant_name:string;amount:number}>}};
+export type Calculation = {calculation_id?:string;input_revision:number; result:{participant_totals:Record<string,number>; settlements:Transfer[]; allocations:Array<{expense_index:number;item_index:number;participant_name:string;amount:number}>}};
 export type Session = {session_id:string; source_text:string; supplied_evidence?:string|null; revisions:Revision[]; calculations:Calculation[]};
 export type SessionSummary = {session_id:string; title?:string; created_at?:string; input_revision?:number};
 export type Receipt = {receipt_id:string; review_revision:number; warning?:string|null; ocr?:{text?:string};fields?:{items?:Array<{name?:string|null;amount?:number|null}>;total_amount?:number|null;warnings?:string[]};review?:Json|null};
@@ -46,6 +46,13 @@ export async function uploadReceipt(uri:string):Promise<Receipt>{
  try{const res=await fetch(BASE+'/api/receipts',{method:'POST',body:form,signal:controller.signal});const data=await res.json();if(!res.ok)throw new Error(typeof data?.detail==='string'?data.detail:JSON.stringify(data?.detail??data));return data as Receipt;}
  finally{clearTimeout(timer);}
 }
+export type ReminderTone = 'friend'|'senior'|'junior';
+export type ReminderResponse = {message:string;source:'gemini'|'template';model:string|null;amount_source:'local_manual'|'confirmed_calculation'};
+export const reminderApi = {
+ generate:(data:{session_id:string;calculation_id?:string|null;from_participant:string;to_participant:string;local_amount?:number;title:string;tone:ReminderTone;repeat:boolean}) =>
+  request<ReminderResponse>('/api/reminders/generate','POST',data),
+};
+
 export const receiptApi={
  draft:(rid:string,body:Json)=>request<Session>(`/api/receipts/${encodeURIComponent(rid)}/draft`,'POST',body),
  review:(rid:string,body:Json)=>request<{receipt_id:string;review_revision:number;evidence:string;hint:string}>(`/api/receipts/${encodeURIComponent(rid)}/review`,'POST',body),
