@@ -5,9 +5,11 @@ from contextlib import closing
 import json
 import os
 import sqlite3
+import logging
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -20,7 +22,12 @@ from settlements.workflow_store import WorkflowError, WorkflowStore
 from settlements.calculator import CalculationError
 from settlements.receipt_api import receipt_router
 
+from backend.multimodal_router import make_multimodal_router
+
+from fastapi.middleware.cors import CORSMiddleware
+
 ROOT = Path(__file__).resolve().parent
+logger = logging.getLogger("uvicorn.error")
 
 
 class Body(BaseModel):
@@ -62,7 +69,33 @@ class CalculateBody(Body):
 
 def create_app(db_path=None, parser=None, ocr=None):
     app = FastAPI(title="모아정산", version="0.1.0")
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
+    allowed_hosts = [
+    "localhost",
+    "127.0.0.1",
+    "testserver",
+    ]
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:8081",
+            "http://127.0.0.1:8081",
+            "http://172.16.51.140:8081",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    dev_host = os.getenv("SETTLEMENT_DEV_HOST")
+    if dev_host:
+        allowed_hosts.append(dev_host)
+
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=allowed_hosts,
+    )
+
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
     parse = parser or parse_and_review
 
@@ -91,8 +124,26 @@ def create_app(db_path=None, parser=None, ocr=None):
         return JSONResponse({"detail": "추출 형식을 확인하지 못했습니다. 직접 입력을 이용해 주세요."}, status_code=422)
 
     @app.exception_handler(ParserError)
-    async def parser_error(request, exc):
-        return JSONResponse({"detail": "AI 호출을 완료하지 못했습니다. 서버의 모델·키 설정을 확인하거나 직접 입력해 주세요."}, status_code=503)
+    async def parser_error(request: Request, exc: ParserError):
+        logger.error(
+            "Parser failed: endpoint=%s, type=%s, message=%s",
+            request.url.path,
+            type(exc).__name__,
+            str(exc),
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": (
+                    "AI 분석에 실패했습니다. "
+                    "입력한 내용은 유지되며 잠시 후 재시도할 수 있습니다."
+                ),
+                "code": "parser_unavailable",
+                "error_type": type(exc).__name__,
+            },
+        )
 
     def require_session(sid):
         try:
@@ -130,9 +181,40 @@ def create_app(db_path=None, parser=None, ocr=None):
                 detail={"code": "invalid_input"},
             ) from exc
 
-    @app.get("/")
-    def home():
-        return FileResponse(ROOT / "frontend" / "index.html")
+    # Expo Web 정적 빌드 경로
+    web_dist = ROOT / "mobile" / "dist"
+
+    if web_dist.is_dir() and (web_dist / "index.html").is_file():
+
+        # Expo JS/CSS 번들 제공
+        expo_assets = web_dist / "_expo"
+
+        if expo_assets.is_dir():
+            app.mount(
+                "/_expo",
+                StaticFiles(directory=expo_assets),
+                name="expo-assets",
+            )
+
+        # 기타 정적 파일 제공
+        assets = web_dist / "assets"
+
+        if assets.is_dir():
+            app.mount(
+                "/assets",
+                StaticFiles(directory=assets),
+                name="expo-public-assets",
+            )
+
+        @app.get("/")
+        def home():
+            return FileResponse(web_dist / "index.html")
+
+    else:
+
+        @app.get("/")
+        def home():
+            return FileResponse(ROOT / "frontend" / "index.html")
 
     @app.get("/api/schema")
     def schema():
@@ -187,8 +269,14 @@ def create_app(db_path=None, parser=None, ocr=None):
         require_session(sid)
         return store.calculate(sid, body.confirmation_id)
 
+    # 영수증 업로드 → Gemini 추출 후보 → 사람 검수 → 기존 정산 워크플로
     app.include_router(receipt_router(store, parse, ROOT, ocr=ocr))
+    app.include_router(make_multimodal_router(app))
+
     return app
 
 
+
 app = create_app(os.getenv("SETTLEMENT_DB_PATH"))
+
+

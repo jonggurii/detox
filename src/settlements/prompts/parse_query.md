@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 |---|---|
-| prompt_version | 1 |
+| prompt_version | 3 |
 | 짝이 되는 스키마 | `src/detox/schemas/request_context.schema.json` |
 | 기준 온톨로지 | 최근 정리한 `RequestContext` 9개 속성 안 |
 | 읽는 코드 | `src/detox/parser.py`에서 전송 구간을 읽도록 구현할 예정 |
@@ -39,7 +39,7 @@
 
 사람과 차수:
 - participants에는 발화에 나온 이름이나 호칭만 담는다. “과장님”, “팀장님”은 그대로 보존한다. “6명”만 보고 사람 6명의 이름을 만들지 않는다. 이름이 없는 화자 “나”를 실제 이름으로 바꾸지 않는다.
-- 이 목록은 찬조자·결제자·부담자를 모두 포함할 수 있다. 목록 전체를 모든 항목의 부담자로 삼지 않는다. 같은 이름이 같은 사람인지는 코드와 사용자가 확인한다.
+- participants는 실제 정산 참여자 및 결제자를 중심으로 구성한다. 찬조자라도 정산에 참여하거나 결제한 사람이라면 포함하지만, 참석하지 않고 찬조금만 제공한 외부 인물은 participants에 추가하지 않고 contributions[].contributor_name에만 기록한다. 목록 전체를 모든 항목의 부담자로 삼지 않는다. 같은 이름이 같은 사람인지는 코드와 사용자가 확인한다.
 - rounds에는 차수 번호와 명시된 참석 인원·이름을 담는다. 합류·이탈·불참은 attendance의 participant_name과 note에 기록한다. 참석 사실만으로 비용 제외나 시간 비례 분담을 만들지 않는다.
 - “1차 10만 원, 6명”처럼 차수 정보만 있고 개별 결제가 불명확하면 그 표현을 rounds.source_note에 남긴다. 한 사람이 한 번 결제했다고 가정해 expenses에 옮기지 않는다.
 
@@ -57,12 +57,15 @@
 분담 기준과 개인 조정:
 - split_rules.method는 equal(남은 금액 똑같이 나누기), explicit_amount(사람별 금액 정하기), null(방식 미정) 중 하나다. “N빵”, “똑같이 나눠”는 equal로 추출한다.
 - participant_names는 예외를 적용하기 전 기본 부담 대상자 전체다. 전체 명단이 불명확하면 null로 두고, 일부 이름이나 인원수만으로 전체를 채우지 않는다.
+- **항목별 규칙 일대일 대응:** expenses의 items 각각에 대해 분담 방식이 명확하면 반드시 별도의 split_rules 객체 하나를 만든다. 서로 다른 item_index에 속한 금액과 사람을 하나의 explicit_amount.individual_amounts 배열에 합치지 않는다. 규칙의 expense_index와 item_index는 반드시 해당 메뉴 항목을 가리켜야 한다.
+- 예를 들어 한 결제의 items가 아메리카노 8,000원, 라떼 10,000원, 디저트 12,000원이고 건·종현·민수가 각각 하나씩 먹었다면, item_index 0은 건 8,000원, item_index 1은 종현 10,000원, item_index 2는 민수 12,000원으로 **서로 다른 세 개의 explicit_amount 규칙**을 출력한다. 한 규칙에 세 명의 금액을 몰아넣지 않는다.
 - explicit_amount의 individual_amounts에는 사용자가 말한 개인별 소비 몫만 담는다. 아직 대신 부담을 옮기지 않은 입력이며 최종 Allocation이 아니다. 지정 금액을 다시 예외 금액으로 더하거나 빼지 않는다.
-- 원 단위 나머지를 누가 부담할지 명시했을 때만 remainder_payer_name에 이름을 담는다. 나머지 자체는 계산하지 않는다.
+- 원 단위 나머지를 누가 부담할지 명시했을 때만 remainder_payer_name에 이름을 담는다. 나머지 자체는 계산하지 않는다. 명시가 없으면 생략하고 계산 엔진의 자동 배분에 맡긴다.
 - exceptions.kind의 허용값은 exclude(이 항목 부담 제외), fixed_amount(합의한 소비 몫), covered_by_other(다른 사람이 대신 부담), null(조정 방식 미정)이다.
 - fixed_amount는 해당 항목에서 그 사람이 소비한 것으로 합의한 금액 전체다. “5천 원 더 낼게”의 5000은 추가분이므로 fixed_amount=5000으로 바꾸지 않는다. 전체 소비 몫이 미정이면 kind와 fixed_amount를 null로 두고 reason에 원문을 남긴다.
 - “맥주 한 잔만 마셨다”, “술을 더 마셨다”만으로 제외나 금액을 확정하지 않는다. 관련 조정 표현은 kind=null과 reason으로 남긴다. 사용자가 술값 부담 제외를 명시하면 exclude로 기록한다.
 - covered_by_other는 participant_name에 원래 부담자, covered_by_name에 대신 부담자를 넣는다. 먼저 결제했다는 사실만으로 대신 부담을 만들지 않는다.
+- 동일 항목의 기본 부담 대상자 목록에 이미 포함되지 않은 사람은 제외 조건이 적용된 상태이므로 같은 사람의 exclude 예외를 중복 생성하지 않는다. 반면 기본 부담 대상자 목록에 포함된 사람을 제외해야 한다면 exclude 예외를 기록한다.
 - 서로 충돌하는 조건, 여러 조정, 대신 부담의 순환·연쇄는 합쳐 계산하지 말고 각 조건을 보존한다. 적용 가능 여부는 후속 검토에서 결정한다.
 
 찬조와 문구:

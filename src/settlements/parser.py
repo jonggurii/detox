@@ -1,6 +1,7 @@
 """추출, 로컬 스키마 검증, 입력 검토. 사용자 확인은 별도 단계다."""
 from collections import Counter, defaultdict
 from functools import lru_cache
+from .gemini_client import get_client, get_model
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
@@ -8,6 +9,9 @@ import asyncio
 import json
 import os
 import re
+import time
+import random
+import logging
 
 from jsonschema import Draft7Validator
 from jsonschema.validators import extend
@@ -192,27 +196,12 @@ def load_contract():
     return prompt, schema, int(version.group(1)), digest
 
 
-@lru_cache(maxsize=1)
 def _client():
-    # 검토 함수만 사용할 때 Gemini SDK나 API 키가 필요하지 않다.
-    from dotenv import load_dotenv
-    from google import genai
-
-    load_dotenv(
-    BASE_DIR.parent.parent / ".env",
-    override=False
-    )
-
-    key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not key:
-        raise ParserConfigurationError(
-            "GEMINI_API_KEY를 설정해 주세요."
-        )
-
-    return genai.Client(
-        api_key=key,
-        http_options={"timeout": 60000, "retry_options": {"attempts": 1}},
-    )
+    # 테스트 및 파서 검토에서 import 시점에 SDK를 요구하지 않는다.
+    try:
+        return get_client()
+    except RuntimeError as exc:
+        raise ParserConfigurationError(str(exc)) from exc
 
 
 def _generation_schema(schema):
@@ -282,6 +271,58 @@ def _reject_number(value):
     )
 
 
+def repair_unambiguous_item_rules(context, *, schema=None):
+    """Split a mistakenly bundled explicit_amount rule only when item matching is unique.
+
+    Does not guess when amounts repeat, items are unknown, or other rules exist.
+    """
+    data = context.model_dump(exclude_unset=True) if isinstance(context, RequestContext) else dict(context)
+    rules = data.get("split_rules") or []
+    expenses = data.get("expenses") or []
+    changed = False
+    new_rules = []
+    for rule in rules:
+        if rule.get("method") != "explicit_amount" or len(rule.get("individual_amounts") or []) < 2:
+            new_rules.append(rule)
+            continue
+        ei, ii = rule.get("expense_index"), rule.get("item_index")
+        if type(ei) is not int or type(ii) is not int or not 0 <= ei < len(expenses):
+            new_rules.append(rule)
+            continue
+        items = expenses[ei].get("items") or []
+        if not 0 <= ii < len(items):
+            new_rules.append(rule)
+            continue
+        amounts = rule["individual_amounts"]
+        if any(type(row.get("amount")) is not int or not row.get("participant_name") for row in amounts):
+            new_rules.append(rule)
+            continue
+        # The existing index must match the first individual amount.
+        if items[ii].get("amount") != amounts[0]["amount"]:
+            new_rules.append(rule)
+            continue
+        matches = []
+        for row in amounts:
+            candidates = [j for j, item in enumerate(items) if item.get("amount") == row["amount"]]
+            if len(candidates) != 1:
+                break
+            j = candidates[0]
+            if any(other is not rule and other.get("expense_index") == ei and other.get("item_index") == j for other in rules):
+                break
+            matches.append(j)
+        if len(matches) != len(amounts) or len(set(matches)) != len(matches) or matches[0] != ii:
+            new_rules.append(rule)
+            continue
+        for j, row in zip(matches, amounts):
+            split = {**rule, "item_index": j, "participant_names": [row["participant_name"]], "individual_amounts": [dict(row)]}
+            new_rules.append(split)
+        changed = True
+    if not changed:
+        return context if isinstance(context, RequestContext) else validate_context_data(data, schema=schema)
+    data["split_rules"] = new_rules
+    return validate_context_data(data, schema=schema)
+
+
 def parse_and_review(
     text,
     *,
@@ -311,7 +352,7 @@ def parse_and_review(
     if client is None:
         client = _client()
 
-    selected = model or os.getenv("GEMINI_MODEL", "").strip()
+    selected = model or get_model()
     if not selected:
         raise ParserConfigurationError(
             "GEMINI_MODEL을 설정해 주세요."
@@ -328,22 +369,50 @@ def parse_and_review(
     feedback = ""
 
     for attempt in (1, 2):
-        try:
-            response = client.models.generate_content(
-                model=selected,
-                contents=contents,
-                config={
-                    "system_instruction": prompt + feedback,
-                    "response_mime_type": "application/json",
-                    "response_json_schema": _generation_schema(schema),
-                    "temperature": 0,
-                },
-            )
-        except Exception as exc:
-            # API 오류를 형식 오류처럼 반복 호출하지 않는다.
-            raise ParserAPIError(
-                "모델 호출에 실패했습니다."
-            ) from exc
+        # Temporary Gemini failures should not discard reviewed receipt data.
+        models = [selected]
+        last_exc = None
+        response = None
+        for model_name in models:
+            for retry_index in range(3):
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config={
+                            "system_instruction": prompt + feedback,
+                            "response_mime_type": "application/json",
+                            "response_json_schema": _generation_schema(schema),
+                            "temperature": 0,
+                        },
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    status = getattr(exc, "code", None)
+                    try:
+                        status = int(status)
+                    except (TypeError, ValueError):
+                        status = None
+                    # SDK errors may expose status only in their string.
+                    detail = str(exc)
+                    retryable = status in (429, 500, 502, 503, 504) or (
+                        status is None and any(t in detail for t in (
+                            "429", "500 INTERNAL", "502", "503", "504", "UNAVAILABLE", "RESOURCE_EXHAUSTED"
+                        ))
+                    )
+                    logging.getLogger(__name__).warning(
+                        "Gemini parse failed: model=%s attempt=%s status=%s error=%s",
+                        model_name, retry_index + 1, status, detail[:500]
+                    )
+                    if not retryable:
+                        raise ParserAPIError(f"Gemini 요청 실패 (HTTP {status or 'unknown'}). 서버 로그를 확인해 주세요.") from exc
+                    if retry_index < 2:
+                        time.sleep(min(2 ** (retry_index + 1) + random.random(), 8))
+            if response is not None:
+                break
+        if response is None:
+            raise ParserAPIError("Gemini 서버가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요.") from last_exc
 
         candidates = getattr(response, "candidates", None) or []
         finish = (
@@ -383,7 +452,81 @@ def parse_and_review(
             )
             continue
 
+        def normalize_explicit_amount_rules(context):
+            # Pydantic RequestContext → dict 변환
+            if hasattr(context, "model_dump"):
+                data = context.model_dump(mode="python")
+                is_pydantic = True
+            elif isinstance(context, dict):
+                data = context
+                is_pydantic = False
+            else:
+                raise TypeError(
+                    f"Unsupported context type: {type(context).__name__}"
+                )
+
+            expenses = data.get("expenses", [])
+
+            for rule in data.get("split_rules", []):
+                if rule.get("method") != "explicit_amount":
+                    continue
+
+                try:
+                    expense = expenses[rule["expense_index"]]
+                    item = expense["items"][rule["item_index"]]
+                except (KeyError, IndexError, TypeError):
+                    continue
+
+                amounts = rule.get("individual_amounts", [])
+
+                if not amounts:
+                    continue
+
+                names = [
+                    entry.get("participant_name")
+                    for entry in amounts
+                ]
+
+                # 이름 누락 및 중복 검사
+                if not all(names) or len(names) != len(set(names)):
+                    continue
+
+                # 금액 유효성 검사
+                if any(
+                    not isinstance(entry.get("amount"), int)
+                    or isinstance(entry.get("amount"), bool)
+                    or entry["amount"] < 0
+                    for entry in amounts
+                ):
+                    continue
+
+                # 개인별 금액 합계와 항목 금액 일치 확인
+                if sum(entry["amount"] for entry in amounts) != item["amount"]:
+                    continue
+
+                # 해당 항목의 실제 부담자만 유지
+                rule["participant_names"] = names
+
+            # 원래 자료형으로 복원
+            if is_pydantic:
+                return type(context).model_validate(data)
+
+            return data
+        
+        context = normalize_explicit_amount_rules(context)
         issues = review_context(context, schema=schema)
+
+        missing_rules = [issue for issue in issues if issue.code == "rule_count"]
+        if missing_rules and attempt == 1:
+            missing = ", ".join(issue.path for issue in missing_rules)
+            feedback = (
+                "\n이전 JSON에서 항목별 분담 규칙이 누락되거나 다른 항목에 합쳐졌습니다. "
+                f"누락/중복 검증 위치: {missing}. "
+                "expenses의 각 items 항목마다 정확히 하나의 split_rules를 생성하세요. "
+                "서로 다른 item_index에 대한 individual_amounts를 한 규칙에 합치지 마세요. "
+                "이미 정확한 다른 항목의 정보는 보존하고 원문에 없는 규칙은 추측하지 마세요."
+            )
+            continue
 
         return ParseResult(
             context=context,
@@ -731,6 +874,7 @@ def review_context(
                 and rules[key][0]["participant_names"] is not None
                 and exception["participant_name"]
                 not in rules[key][0]["participant_names"]
+                and exception["kind"] != "exclude"
             ):
                 add(
                     "exception_outside_rule",
@@ -808,10 +952,15 @@ def review_context(
         path = f"contributions[{i}]"
         ei = target(contribution, path, item=False)
 
-        person(
-            contribution["contributor_name"],
-            path + ".contributor_name",
-        )
+        # 외부 찬조자는 정산 참여자 목록에 없어도 된다.
+        # 다만 제공자의 이름/호칭은 반드시 확인해야 한다.
+        contributor = contribution["contributor_name"]
+        if not contributor or not contributor.strip():
+            add(
+                "missing_contributor",
+                path + ".contributor_name",
+                "찬조금을 제공한 사람 또는 단체를 확인해 주세요.",
+            )
 
         if contribution["amount"] is None:
             add(

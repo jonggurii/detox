@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from .parser import load_contract, validate_context_data
-from .receipt_ocr import MAX_BYTES, OCRError, PaddleReceiptOCR, prepare_image
+from .receipt_reader import MAX_BYTES, ReceiptExtractionError, GeminiReceiptReader, prepare_image
 from .receipt_fields import extract_receipt_fields
 from .receipt_draft import ReceiptDraftInput, manual_context, reviewed_evidence, condition_text
 
@@ -38,7 +38,7 @@ class ReceiptAIInput(BaseModel):
 
 def receipt_router(store, parse, root, ocr=None):
     router = APIRouter()
-    engine = ocr if ocr is not None else PaddleReceiptOCR()
+    engine = ocr if ocr is not None else GeminiReceiptReader()
     directory = Path(store.path).parent / "receipts"
     directory.mkdir(parents=True, exist_ok=True)
     upload_lock, parse_lock = Lock(), Lock()
@@ -46,6 +46,17 @@ def receipt_router(store, parse, root, ocr=None):
     with closing(sqlite3.connect(store.path)) as db:
         db.execute("CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, document TEXT NOT NULL)")
         db.commit()
+
+    def receipt_fields(output):
+        # Gemini 구조화 결과를 다시 OCR 정규식에 통과시키지 않는다.
+        if "items" in output and "total_amount" in output:
+            return {"items": [{"name": x["name"], "amount": x["amount"]}
+                              for x in output["items"]],
+                    "total_amount": output["total_amount"],
+                    "total_candidates": [], "unparsed_lines": [],
+                    "warnings": output.get("warnings", [])}
+        # 과거에 저장한 OCR 문서 및 기존 테스트 fixture 읽기 호환.
+        return extract_receipt_fields(output)
 
     def save(doc, new=False):
         with closing(sqlite3.connect(store.path)) as db:
@@ -64,7 +75,7 @@ def receipt_router(store, parse, root, ocr=None):
         doc = json.loads(row[0])
         doc.setdefault("review_revision", 0)
         if "fields" not in doc:
-            doc["fields"] = extract_receipt_fields(doc.get("ocr") or {})
+            doc["fields"] = receipt_fields(doc.get("extraction") or doc.get("ocr") or {})
         return doc
 
     def request_key(value):
@@ -198,14 +209,18 @@ def receipt_router(store, parse, root, ocr=None):
             warning = None
             try:
                 output = engine.read(folder / "image.png")
-            except OCRError as exc:
+            except ReceiptExtractionError as exc:
                 warning = str(exc)
-                output = {"text": "", "blocks": [], "low_score_count": 0}
-            if not output["text"] and not warning:
-                warning = "글자를 찾지 못했습니다. 선명한 사진을 올리거나 직접 입력해 주세요."
+                output = {"text": "", "blocks": [], "low_score_count": 0,
+                          "items": [], "total_amount": None,
+                          "warnings": ["자동 인식 실패. 원본 사진을 보고 직접 입력해 주세요."]}
+            if not output.get("text") and not output.get("items") and not warning:
+                warning = "영수증에서 품목을 찾지 못했습니다. 사진을 확인하거나 직접 입력해 주세요."
             doc = {"receipt_id": rid, "created_at": datetime.now(timezone.utc).isoformat(),
-                   "image_sha256": sha256(raw).hexdigest(), "ocr": output,
-                   "fields": extract_receipt_fields(output), "review_revision": 0,
+                   "image_sha256": sha256(raw).hexdigest(),
+                   "extraction": output,
+                   "ocr": output,  # 이전 응답 구조를 사용하는 기존 화면·저장 자료 호환
+                   "fields": receipt_fields(output), "review_revision": 0,
                    "warning": warning, "review": None, "request_key": None, "session_id": None}
             save(doc, new=True)
             return doc

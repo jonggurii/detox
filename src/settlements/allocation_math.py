@@ -104,32 +104,46 @@ def item_shares(net, rule, exceptions):
         for person, value in exact.items()
     }
     remainder = net - sum(shares.values())
+    original_remainder = remainder
 
     if remainder:
         payer = rule.get("remainder_payer_name")
 
         if not payer:
-            fail(
-                "unresolved_rounding",
-                "원 단위 나머지 부담자를 확인해 주세요.",
-            )
-        if payer in covers:
+            # 명시적 부담자가 없으면 유효한 분담자 순서대로 1원씩 분배한다.
+            # 고정 합의액과 다른 사람에게 이전한 몫은 변경하지 않는다.
+            eligible = [
+                name for name in members
+                if name not in excluded
+                and name not in covers
+                and (name not in fixed or name in covers.values())
+            ]
+            if not eligible:
+                fail(
+                    "unresolved_rounding",
+                    "원 단위 나머지를 배분할 유효한 부담자가 없습니다.",
+                )
+            for index in range(remainder):
+                shares[eligible[index % len(eligible)]] += 1
+            remainder = 0
+        elif payer in covers:
             fail(
                 "invalid_remainder_payer",
                 "잔액 부담자가 본인 몫을 다른 사람에게 이전했습니다.",
             )
-        if payer not in members or payer in excluded:
+        if payer and (payer not in members or payer in excluded):
             fail(
                 "invalid_remainder_payer",
                 "잔액 부담자가 유효한 부담 대상이 아닙니다.",
             )
-        if payer in fixed and payer not in covers.values():
+        if payer and payer in fixed and payer not in covers.values():
             fail(
                 "invalid_remainder_payer",
                 "고정 합의액에 잔액을 더하려면 새 합의가 필요합니다.",
             )
 
-        shares[payer] += remainder
+        if payer:
+            shares[payer] += remainder
 
     if sum(shares.values()) != net:
         fail(
@@ -137,4 +151,4 @@ def item_shares(net, rule, exceptions):
             "항목별 부담액 합계가 배분 금액과 다릅니다.",
         )
 
-    return shares, exact, remainder
+    return shares, exact, original_remainder

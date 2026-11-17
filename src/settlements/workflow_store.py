@@ -34,9 +34,37 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def remove_redundant_exclusions(data):
+    """기본 분담 대상에 없는 사람의 exclude만 제거한다. 원본은 수정하지 않는다."""
+    from copy import deepcopy
+
+    clean = deepcopy(data)
+    rules = {}
+    for rule in clean.get("split_rules", []):
+        key = (rule.get("expense_index"), rule.get("item_index"))
+        rules.setdefault(key, []).append(rule)
+    filtered = []
+    for ex in clean.get("exceptions", []):
+        key = (ex.get("expense_index"), ex.get("item_index"))
+        candidates = rules.get(key, [])
+        if (
+            ex.get("kind") == "exclude"
+            and len(candidates) == 1
+            and isinstance(candidates[0].get("participant_names"), list)
+            and ex.get("participant_name") not in candidates[0]["participant_names"]
+            and ex.get("participant_name") in clean.get("participants", [])
+        ):
+            continue
+        filtered.append(ex)
+    if "exceptions" in clean:
+        clean["exceptions"] = filtered
+    return clean
+
+
 def review(data):
     schema = load_contract()[1]
     clean = validate_context_data(data, schema=schema).model_dump(exclude_unset=True)
+    clean = remove_redundant_exclusions(clean)
     issues = [issue.model_dump() for issue in review_context(clean, schema=schema)]
     return clean, issues
 
