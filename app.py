@@ -20,6 +20,7 @@ from settlements.parser import (
 )
 from settlements.workflow_store import WorkflowError, WorkflowStore
 from settlements.calculator import CalculationError
+from settlements.receipt_api import receipt_router
 
 from backend.multimodal_router import make_multimodal_router
 
@@ -268,7 +269,8 @@ def create_app(db_path=None, parser=None, ocr=None):
         require_session(sid)
         return store.calculate(sid, body.confirmation_id)
 
-    # Gemini 멀티모달 라우터
+    # 영수증 업로드 → Gemini 추출 후보 → 사람 검수 → 기존 정산 워크플로
+    app.include_router(receipt_router(store, parse, ROOT, ocr=ocr))
     app.include_router(make_multimodal_router(app))
 
     return app

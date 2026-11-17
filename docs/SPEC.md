@@ -1,349 +1,265 @@
-# SPEC.md — Smart Settlement Agent (detox)
+# SPEC.md — 모아정산 | 복합 N빵 정산 MVP
 
->  v3.6    
-> 도메인 정본: [`ontology.yaml`](ontology.yaml)  
-> 문제 근거: [`PROBLEM.md`](PROBLEM.md), [`research/interviews_union.md`](research/interviews_union.md)  
-> DTO 정본: `src/settlements/schemas/request_context.schema.json`
+> 문서 버전: **3.7 **
+> 프로젝트: 2026학년도 2학기 아주대학교 AI 캡스톤디자인 · 11조 Detox
+> 서비스: **모아정산** (저장소: https://github.com/jonggurii/detox)
+> 도메인 정본: [`ontology.yaml`](ontology.yaml) v3.6 / 문제 근거: [`PROBLEM.md`](PROBLEM.md), [`research/interviews_union.md`](research/interviews_union.md)
+> 입력 DTO 정본: `src/settlements/schemas/request_context.schema.json` / 사용자 실행 안내: [`../README.md`](../README.md)
 
-## 1. 문제 정의
+## 1. 문제 (왜 만드는가)
 
-복합 모임 정산을 맡은 사용자는 영수증에 적힌 항목, 차수별 참석, 술·음식 미이용자, 일부 인원의 고정 부담, 대신 부담, 찬조금, 여러 결제자의 선결제 금액을 수기로 맞춰야 한다. 과정에서 누가 얼마를 내야 하는지에 대한 설명과 입금 확인까지 반복되며 불필요한 시간·관계 부담이 생긴다.
+모임의 정산 담당자는 여러 차수의 참석 변화, 사람별 소비 항목, 술값 제외, 찬조금과 대신 부담을 반영하면서 결제자·청구액을 맞추기 위해 메모장과 계산기를 오가며 반복 계산한다. 또한 정산 근거를 설명하고 송금을 재안내하는 부담을 겪는다. 이 문제는 인터뷰 로그 6·7·12·15·17·18·19·20에서 관찰됐다.
 
-**해결 가설:** 영수증/발화에서 정산 후보를 추출하고, 모호한 항목을 사용자에게 확인받고, 확정된 입력만 결정론적 계산기로 처리하면 반복 입력·계산 오류·청구 누락을 줄일 수 있다.
+**해결 가설:** 자연어·영수증에서 정산 조건의 *후보*를 추출하고, 사용자가 이를 확인·수정한 뒤 Python 계산기로 원 단위 부담액과 결제자별 송금액을 계산하면 반복 입력·재계산 및 잘못된 청구를 줄일 수 있다. 효과가 이미 입증되었다는 뜻은 아니다.
 
-## 2. 사용자와 핵심 사용 시나리오
+## 2. 타깃 사용자와 대표 작업
 
-**주 사용자:** 여러 사람이 모이는 식사·술자리·여행의 정산 담당자. **관련 사용자:** 선결제자, 비용 부담자, 찬조자, 입금 확인 담당자.
+- **주 사용자:** 모임/회식/여행에서 비용을 먼저 내거나 여러 사람의 지출을 모아 정산하는 대학생·직장인 총무.
+- **관련 사용자:** 선결제자, 부담자, 찬조자, 송금 안내를 받는 사람.
+- **비대상:** 법인 회계·세무 처리, 자동 은행 이체/거래 조회, 자동 카카오톡 발송.
+- **핵심 흐름:** 입력 방식 선택 → 정산 자료 입력 → (AI인 경우) 추출 후보 검토 → 누락·충돌 수정 → 승인 → 계산/송금 내역 확인 → 사용자에 의한 실제 송금·입금 대조.
 
-1. 담당자가 영수증 사진을 업로드한다.
-2. 모델이 상호·거래일시·품목·금액 후보를 추출한다. 확인 불가 값은 미확정으로 둔다.
-3. 담당자가 품목을 검토/수정하고 결제자를 확인한다.
-4. “2차에는 지수만 왔고 술값은 도윤을 빼고, 민수는 1만 원만 부담” 같은 자연어 조건을 입력한다.
-5. 모델은 `RequestContext` 초안을 제안하고 Python 검증기가 이름·인덱스·원금·예외 충돌을 검토한다.
-6. 담당자가 이슈를 해결하고 특정 입력 버전을 **명시적으로 승인**한다.
-7. Python 계산기가 항목별 `Allocation`과 결제별 `SettlementResult`를 생성한다.
-8. 담당자는 청구 문구 초안을 확인하고 송금 안내, 수동 입금 대조를 처리한다.
+## 3. MVP 핵심 기능과 범위
 
-## 3. MVP 범위
+### 3.1  **MVP 대상**
 
-### 3.1 포함 목표
-
-- 이미지 업로드, 원본 보존, 시각/용량/MIME 유효성 검사 및 영수증 추출.
-- 자연어 발화에서 참여자, 차수, 지출, 품목, 분담 규칙, 예외, 찬조를 추출.
-- 영수증 인식 결과와 자연어 입력을 **분리 검토**하고, 검토된 필드만 합쳐 확정 DTO 구성.
-- `RequestContext`의 JSON Schema 형식 검증 + `review_context` 의미 검증.
-- 확인 이슈 표시 및 수정 이력 보존, 버전/해시 기반 명시적 승인.
-- 항목별 Python 원 단위 산술, 설명 가능한 계산 근거, 합계 검증.
-- 결제별 송금 요청 초안·관계별 안내 초안, 수동 입금 대조.
-- SQLite 보존, 동일 요청 멱등성, 회귀/골든 테스트.
-
-### 3.2 비포함
-
-- 자동 은행 이체/잔액 조회/입금 조회, 카카오톡 자동 발송.
-- 영수증 훼손 복원, 상점에 대한 사실 조회/자동 정정.
-- 음성 실시간 통화 인터페이스(Live API), 대규모 다인 정산의 최적 상계.
-- 확인하지 않은 사람/금액/예외의 자동 추정 또는 승인.
-
-### 3.3 현재 구현과 목표의 구분
-
-| 항목 | 관측 근거 | 상태 |
-|---|---|---|
-| `src/settlements/` 프로젝트 구조 | 사용자 제공 트리 | 경로 확인 |
-| `request_context.schema.json` 9필드 계약 | 첨부 파일 | 문서/스키마 확인 |
-| 이전 `parser.py`의 Gemini 요청 | 첨부 파일 | 구식 DTO와 모델명을 사용한 코드 확인 |
-| 영수증 API·SQLite 검토/버전 처리 | 파일 경로만 전달됨 | **실제 전체 코드 확인 전** |
-| `review_context` 골든 테스트 G01~G08 | 사용자 제공 설명 | **실행 결과 미검증** |
-| Gemini 3.8 Flash로 영수증·자연어 추출 통합 | 사용자 선택 | **구현 목표** |
-| 8개 클래스 온톨로지 정돈 | 이번 문서 | **설계 개정안** |
-
-## 4. 도메인과 입력 계약
-
-### 4.1 핵심 도메인
-
-`Participant`, `SettlementSession`, `Expense`, `Item`, `SplitRule`, `ItemException`, `Allocation`, `SettlementResult`의 **8개 클래스**가 정본이다. 예전의 `SettlementRound`, `RoundParticipation`, `Receipt`, `Contribution`, `ContributionAllocation`, `PaymentRecord`, `ReminderMessage`는 독립 클래스가 아니라 `SettlementSession.rounds`, `Expense.receipt/subsidy`, `SettlementResult.payment_checks/reminder` 하위 구조로 표현한다. 상세 속성은 온톨로지 YAML을 따른다.
-
-### 4.2 RequestContext — 9필드 DTO
-
-```json
-{
-  "participants": ["민수", "지수"],
-  "rounds": [{"round_number": 1, "participant_names": ["민수", "지수"]}],
-  "expenses": [{
-    "round_number": 1,
-    "payer_name": "민수",
-    "total_amount": 20000,
-    "items": [{"name": "식사", "amount": 20000}]
-  }],
-  "split_rules": [{
-    "expense_index": 0,
-    "item_index": 0,
-    "method": "equal",
-    "participant_names": ["민수", "지수"],
-    "remainder_payer_name": "민수"
-  }],
-  "exceptions": [],
-  "contributions": [],
-  "tone": "정중하게",
-  "relationship": "동기",
-  "reminder_handling": "개인 메시지 초안만"
-}
-```
-
-이 입력은 **가상 예시**다. 실제 속성의 required/optional/null/enum은 별도 스키마가 우선한다. 최상위 필수 필드는 `participants`, `expenses`이며 다른 필드는 생략 가능하다. `expense_index`와 `item_index`는 0-based다. **JSON Schema 통과는 계산 허용을 뜻하지 않는다**. `null`·빈 배열·다른 이름 표기·근거 부족은 `review_context`의 확인 대상일 수 있다.
-
-### 4.3 영수증 추출 DTO(제안)
-
-```json
-{
-  "merchant_name": null,
-  "transaction_date": null,
-  "transaction_time": null,
-  "total_amount": 20000,
-  "items": [{"name": "식사", "quantity": null, "unit_price": null, "total_price": 20000}],
-  "uncertain_fields": [],
-  "notes": []
-}
-```
-
-영수증 DTO는 **모델 출력 중간 산출물**이며 `RequestContext` 또는 확정 `Expense`와 동일하지 않다. 원본 이미지·원본 바이트·정규화 이미지·추출물·사용자 수정본의 연결을 보존한다. 실제 기존 `receipt_fields.py`·`receipt_draft.py` 계약을 본 뒤 필드를 확정한다.
-
-## 5. 시스템 동작과 API 명세
-
-### 5.1 처리 경계
-
-```text
-영수증 이미지  ─→ Gemini(영수증 추출 프롬프트) ─→ 영수증 후보 JSON ─┐
-                                                               ├─→ 스키마/의미 검증 ─→ 검토/수정 ─→ 승인
-자연어 발화   ─→ Gemini(정산 파싱 프롬프트) ─→ RequestContext  ──┘                                  │
-                                                                                                    ↓
-                                                                                        Python 정산 엔진
-                                                                                                    ↓
-                                                                                 Allocation / SettlementResult
-                                                                                                    ↓
-                                                                                         송금 안내·수동 대조
-```
-
-**같은 모델 사용 ≠ 같은 프롬프트/같은 JSON 구조.** 역할을 분리해 품목·사람·차수의 교차 혼동을 줄인다. 영수증에 결제자 이름이 나타나지 않으면 사용자 발화 또는 확인으로만 결제자를 확정한다.
-
-### 5.2 Gemini 공통 호출부(구현 목표)
-
-- 설정: `GEMINI_API_KEY` (비밀), `GEMINI_MODEL` (기본 계획값 `gemini-3.8-flash`).
-- Python SDK: `google-genai`의 단일 클라이언트/모델 설정.
-- 영수증: 이미지 바이트 + 전용 프롬프트 + 제한된 구조화 JSON. 이미지 전처리/검사는 지속.
-- 발화: 원문 + 전용 프롬프트 + 구조화 JSON. 프로젝트의 Draft 7 스키마 전체를 API가 직접 받아들이지 못할 경우, 모델용 축약 출력 스키마와 **로컬 전체 Draft 7 검증**을 구분한다.
-- API 호출 실패, 빈 응답, JSON 파싱 실패, 타입 오류, 필드 누락은 **인식 실패/재검토 상태**로 처리한다. 금액을 0으로 채워 성공 처리하지 않는다.
-- 원문에 없는 사람·항목·금액·차수·예외를 창작하지 않으며 추출 근거·불확실성을 유지한다.
-
-### 5.3 API 및 계산 인터페이스
-
-**현재 확인 가능한 로컬 인터페이스(사용자 제공 명세):**
-
-```python
-settlements.calculator.calculate_settlement(context: dict) -> CalculationResult
-```
-
-위 선언은 제공된 스펙상 인터페이스이며 실제 코드의 정확한 시그니처/반환형은 `calculator.py` 검토 후 확인한다.
-
-**후속 HTTP API 계약:**
-
-| 기능 | 메서드와 경로 | 요청 요지 | 반환/주의 |
+| ID | 사용자 기능 | 구현 경로/범위 | 
 |---|---|---|---|
-| 영수증 등록/추출 | `POST /api/receipts` (제안) | 이미지 파일 | `receipt_id`, `status=review_required`, 추출 필드 |
-| 정산 발화 파싱 | `POST /api/parse` (제안) | `text`, 선택적 `session_id` | DTO 초안, 확인 이슈 |
-| 입력 검토 | 기존 `review_context(context)` | `RequestContext` | `ReviewIssue[]` (입력 불변) |
-| 검토 수정/승인 | `POST /api/sessions/{sid}/confirm` (제안) | `input_revision`, 수정본/검토 근거 | `confirmation_id`, `context_sha256` |
-| 계산 | `POST /api/sessions/{sid}/calculate` (후속 계약) | `{"confirmation_id": "..."}` | 해당 확정 버전의 `CalculationResult`; 멱등 |
+| **MVP1** | 자연어 AI 정산 | Gemini가 문장에서 `RequestContext` 후보 생성 → 의미 검토 → 사용자 확인 → Python 계산 |
+| **MVP2** | 영수증 이미지 + 추가 설명 | JPG/PNG 이미지에서 항목·금액 후보 추출 → 사진과 대조·수정 → 정산 조건 확인; 사진만으로 소비자 임의 확정 금지 | 
+| **MVP3** | 직접 N분의 1 | 참여자·결제자·총지출액 입력 → `equal` 규칙 구성 → 검토/승인 → Python 계산 | 
+| **MVP4** | 직접 차액 정산 | 모바일 UI에서 송금자·수취인·송금액을 지정하고 합계 검증 후 송금 목록 구성 |
+| **MVP5** | 정산 조건 검토·승인 | 누락/불일치 이슈 표시, 수정 이력과 입력 버전 확인, 확인 ID 없는 계산 차단 | 
+| **MVP6** | 개인별 부담액·송금 결과 | 항목별 부담액, 참여자별 합계, 결제자에게 보낼 금액 확인·공유용 문구 사용 | 
 
-**중요:** 경로는 실제 `receipt_api.py`/`app.py`를 받기 전의 **제안**이다. 기존 라우트가 존재하면 이를 우선 보존하고 하위호환을 검토한다.
+**구현 경계:** `MVP4`는 현재 `mobile/src/app/index.tsx`에서 `AsyncStorage`에 **기기 로컬** 저장되는 송금 목록이다. 백엔드 `RequestContext`의 비용 항목 분할이나 `POST /api/sessions/{sid}/calculate`로 계산된 결과가 아니며, 서버와 자동 동기화되지 않는다. **차액 정산의 `송금 총액`은 전체 식사비가 아니라 개별 송금액의 합**이다. 여러 결제자 간 순채무 최적 상계와 혼동하지 않는다.
 
-### 5.4 계산 결과(JSON 직렬화 계약)
+**모델·OCR 정책:** `GEMINI_MODEL=gemini-3.5-flash`를 텍스트·이미지 추출 공통 기본 모델명으로 사용한다. `google-genai` SDK, `src/settlements/gemini_client.py`의 공통 설정과 `receipt_reader.py`의 이미지 구조화 추출을 사용하며 실제 원격 모델 접근/성능은 유효한 키를 사용한 별도 실측이 필요하다.
+
+### 3.2 후속 범위 
+
+- 은행 자동 이체, 실거래 자동 조회·검증, 실제 카카오톡/문자 자동 발송.
+- 서비스 간/기기 간 차액 정산 동기화, 서버 기반 차액 정산 청구 관리 및 송금 관계의 자동 상계 최적화.
+- 보안이 검증된 공개 다중 사용자 운영, Render 무료 인스턴스의 영구 데이터 보존 보증.
+- 자동 결제, 영수증 훼손 복원, 실시간 음성 Live API, 사람/금액/찬조 적용 비율의 무근거 자동 추측.
+- 입금 대조·관계별 재안내 기능의 완전한 서버 측 상태 관리와 자동 발송. 모바일의 로컬 입금 체크·안내 초안 UI와 구분한다.
+
+### 3.3 실제 구현·검증 상태 
+
+| 구분 | 확인한 근거 | 판정 |
+|---|---|---|
+| 자연어 파싱·검토 | `src/settlements/parser.py`, 스키마, `tests/test_parser.py`, 기존 골든 테스트 | 코드/결정적 테스트 존재; 
+| 영수증 이미지 추출 | `receipt_reader.py`, `receipt_api.py`, `backend/multimodal_router.py`, `tests/test_multimodal_integration.py` | API 경로와 모의 이미지 추출 검증; |
+| Python 정산 | `calculator.py`, `allocation_math.py`, 정산·회귀 테스트 | 결정적 계산 구현/검사 존재 |
+| 검토·승인·수정 | `workflow_store.py`, `tests/test_web_api.py` | 버전/승인 ID/반복 계산 경로 테스트 존재 |
+| 직접 N분의 1 | 모바일 입력 화면 + 서버 `/api/sessions/manual` | 코드 경로 존재; 배포 APK 화면 체험 별도 확인 |
+| 직접 차액 정산 | 모바일 `createDiff()`, `diffValid`, `AsyncStorage` |
+| Evals | `evals/EVAL_DESIGN.md`, `evals/evalset.jsonl`(35케이스), `evals/run_evals.py`, `evals/results/` | 
+
+`pytest` 통과는 실제 Gemini 서버 응답 품질이나 Render/Expo 배포 버전의 정상 동작을 증명하지 않는다. 배포 상태/앱 화면은 평가 전 실제 기기에서 확인한다.
+
+## 4. 도메인·데이터 계약
+
+### 4.1 정본 온톨로지
+
+현행 `docs/ontology.yaml` **v3.6의 8개 핵심 클래스**를 유지한다.
+
+`Participant`, `SettlementSession`, `Expense`, `Item`, `SplitRule`, `ItemException`, `Allocation`, `SettlementResult`.
+
+차수/참석·영수증·찬조·입금/재안내는 현행 YAML의 하위 구조로 표현한다. 기존 v3.3의 15개 클래스 문서와 혼동하지 않는다. **`RequestContext`는 도메인 클래스가 아니라 사용자 확인 전의 입력 DTO**다.
+
+### 4.2 자연어 입력 `RequestContext`
+
+최상위 키는 `participants`, `rounds`, `expenses`, `split_rules`, `exceptions`, `contributions`, `tone`, `relationship`, `reminder_handling`의 **9개**다. 필수 최상위 키는 `participants`, `expenses`; 나머지 생략/`null` 허용 여부는 JSON Schema가 정본이다.
+
+- `Expense.total_amount`는 결제 한 건의 원래 총액, `Item.amount`는 그 안의 항목 전체 금액이다.
+- `split_rules[].method`: `equal` 또는 `explicit_amount`; `exceptions[].kind`: `exclude`, `fixed_amount`, `covered_by_other`.
+- `expense_index`·`item_index`는 해당 추출 결과 배열의 **0-based 위치**이지 영구 ID가 아니다.
+- `contributions`의 적용 대상/금액을 짐작하지 않고 확인 질문으로 남긴다.
+- `reminder_handling`은 스키마의 `undecided`, `personal_follow_up`, `external_service_only`를 따른다. 계산 결과나 실제 발송 여부가 아니다.
+- 이름이 같은 사람, “나”, 호칭, 중도 합류·이탈의 부담 범위는 임의로 결정하지 않는다.
+
+**정상 입력 예시(시나리오 1의 의미를 표현한 후보):**
 
 ```json
 {
-  "calculation_id": "calc_example_001",
-  "input_revision": 1,
-  "allocations": [
-    {
-      "expense_index": 0,
-      "item_index": 0,
-      "participant_name": "민수",
-      "amount": 10000,
-      "basis": "원금=20000; 찬조=0; 방식=equal; 대상=민수,지수; 최종=10000"
-    },
-    {
-      "expense_index": 0,
-      "item_index": 0,
-      "participant_name": "지수",
-      "amount": 10000,
-      "basis": "원금=20000; 찬조=0; 방식=equal; 대상=민수,지수; 최종=10000"
-    }
+  "participants": ["민수", "지훈", "영희"],
+  "expenses": [{"payer_name": "민수", "total_amount": 84000, "items": [{"name": "식사비", "amount": 60000}, {"name": "술값", "amount": 24000}]}],
+  "split_rules": [
+    {"expense_index": 0, "item_index": 0, "method": "equal", "participant_names": ["민수", "지훈", "영희"]},
+    {"expense_index": 0, "item_index": 1, "method": "equal", "participant_names": ["민수", "지훈", "영희"]}
   ],
-  "settlement_results": [
-    {
-      "expense_index": 0,
-      "from_participant": "지수",
-      "to_participant": "민수",
-      "amount": 10000,
-      "basis": "1차 식사 20000원 중 지수 부담분",
-      "request_status": "draft",
-      "payment_status": "unconfirmed"
-    }
-  ],
-  "participant_totals": {"민수": 10000, "지수": 10000},
-  "validation": {
-    "item_totals_match": true,
-    "expense_totals_match": true,
-    "contribution_totals_match": true,
-    "request_totals_match": true
-  }
+  "exceptions": [{"expense_index": 0, "item_index": 1, "participant_name": "영희", "kind": "exclude", "reason": "영희는 술을 마시지 않았다"}]
 }
 ```
 
-**예시는 수치가 일치하는 단순 사례**다. `participant_totals`는 개인별 소비 부담 합계이지 송금액 합계가 아니다. 결제자 본인 부담은 `allocations`에 나타나더라도 `settlement_results`에는 나타나지 않는다. 입력이 미확정이거나 검증식이 깨지면 계산·청구 확정을 허용하지 않는다.
+이 예시는 **사용자가 확인한 정확한 조건을 코드에 전달하는 경우의 테스트 데이터**이지 Gemini가 실제로 위 JSON을 출력했다는 증거가 아니다.
 
-#### 4대 무결성 판정식
+### 4.3 영수증 추출 계약
 
-1. **`item_totals_match`**: 각 `Item`별로 `sum(Allocation.amount) + sum(confirmed_item_subsidy.amount) == Item.amount`.
-2. **`expense_totals_match`**: 각 `Expense`별로 `sum(Item.amount) == Expense.total_amount`.
-3. **`contribution_totals_match`**: 각 확정 찬조에 대해 `sum(uses.amount) == subsidy.amount`; 항목 찬조 총합은 항목 원금을 초과할 수 없음.
-4. **`request_totals_match`**: 각 결제별로 `sum(SettlementResult.amount) + payer_own_allocation + confirmed_subsidy == Expense.total_amount` (본 스펙의 찬조 적용/자금 귀속 정책에 따름).
+`receipt_reader.py`의 현재 모델 응답 JSON은 `items[{name,amount}]`, `total_amount`, `raw_lines[]`, `notes[]`이며, `name`과 `amount`/총액은 모를 때 `null`을 허용한다. 로컬 파서는 결과를 추가 검증하여 `warnings[]`를 구성한다.
 
-찬조자가 결제자에게 실제 송금해야 하는 흐름을 별도로 모델링해야 한다면 위 4번 식을 그대로 금융 정산 완료 조건으로 확대 해석해서는 안 된다. 현 단계는 **소비 부담 분배/수취 결제자에 대한 청구** 모델이다.
+- 영수증 업로드는 JPG/PNG 정지 이미지, 최대 10MB, 1,200만 화소로 제한.
+- 영수증에 없는 **사람·차수·메뉴 소비자·송금 관계는 추정하지 않음**.
+- 품목 합계와 영수증 총액이 다르면 자동으로 차액을 채워 넣지 않고 확인 경고를 출력.
+- 원본 이미지, 모델 추출 후보, 사용자가 수정한 내용은 별도 기록으로 취급.
+- 영수증 JSON과 정산 `RequestContext`는 다른 계약이다. 영수증 이미지가 정확하더라도 자연어의 소비 조건 확인이 필요하다.
 
-### 5.5 계산 순서
+### 4.4 계산·송금 자료의 구분
 
-1. **찬조 공제:** 승인된 항목별 찬조금을 원금에서 먼저 뺀다.
-2. **제외 처리:** `exclude` 소비자를 분담 대상에서 제외하고 그 항목 소비 몫을 0으로 둔다.
-3. **고정 몫/기본 분할:** `fixed_amount`는 해당 인원의 **소비 몫**을 확정한다. 남은 금액은 `equal` 또는 `explicit_amount`대로 배분한다.
-4. **대신 부담 이전:** `covered_by_other`는 원래 소비 몫을 대신 부담자에게 이전한다. 총액은 바꾸지 않는다.
-5. **원 단위 잔액 귀속:** 정수 원으로 절사한 나머지를 지정 `remainder_payer_name`에게 전액 배정한다. 지정이 없고 나머지가 있다면 계산하지 않는다.
+`Allocation`은 각 항목의 사람별 소비 부담액이고, `SettlementResult`는 **해당 지출을 먼저 결제한 사람에게 보낼 금액**이다. 결제자 본인의 부담액은 전체 계산에 포함하되 본인에게 송금하라는 요청은 만들지 않는다. 직접 차액 정산의 `direct_transfers`는 모바일 로컬 표현이며 현행 `RequestContext`의 서버 입력 필드가 아니다.
 
-반올림·암묵적 1/N·예외 임의 보정·부동소수점 오차를 금지한다. 동일 항목에 배타적인 조정이 중복되거나 대신 부담 순환이 발생하면 `ReviewIssue`로 확인한다.
+## 5. 인터페이스와 처리 흐름
 
-### 5.6 상태·저장·승인
-
-- **원본:** 이미지 원본 바이트/해시, 정규화 이미지, 자연어 원문을 식별자별로 보존한다.
-- **추출:** 모델 ID, 추출 시각(가능한 경우), 후보 JSON, 검토 상태를 기록한다.
-- **수정:** 기존 확정값을 재추출물로 덮어쓰지 않고 변경 버전/근거를 남긴다.
-- **확정:** 입력 버전과 정규화 JSON 해시(`context_sha256`)를 확인·잠근다.
-- **계산/청구:** 동일 `confirmation_id` 중복 처리 방지. 변경 버전의 계산과 이전 청구/입금 관계를 조용히 치환하지 않는다.
-- **동시성:** SQLite 쓰기는 트랜잭션/락으로 충돌을 방지하고 원자적으로 처리한다.
-- **민감정보:** API 키는 환경 변수, 계좌/영수증/사용자 원문은 접근 제어와 비밀 로그 정책 적용.
-
-## 6. 수용 기준 — EARS
-
-### 6.1 입력 검토 (`review_context`) — AC1~AC6
-
-| ID | 조건과 시스템 반응 | 기계적 판정 |
-|---|---|---|
-| **AC1** | 정상 입력 G01 및 스키마/하니스에서 정의한 1인·0원 최소 G02 입력 | `(code, path)` 전체 목록이 정확히 `[]`, `issue_count == 0` |
-| **AC2** | 참여자/결제 내역 누락 또는 결제자 미식별 | `missing_participants`, `missing_expenses`, `unresolved_person` 등 해당 확인 이슈 반환 |
-| **AC3** | 결제 총액과 항목 합계 불일치 | 원본을 보존하며 `item_sum_mismatch` 이슈 반환; 자동 보정 금지 |
-| **AC4** | `ItemException.item_index`/`kind` 등 필수 조정 정보 미정 | 조정 임의 확정 없이 명시적 확인 이슈 반환 |
-| **AC5** | 균등 분배시 1원 단위 나머지가 있는데 잔액 부담자 미정 | `unresolved_rounding` 발생, 계산 차단 |
-| **AC6** | 임의 입력의 검토, 특히 `reason`에 공격성 지시문이 들어 있는 경우 | 입력 객체 불변, 지시문은 데이터로만 취급, 정상 입력의 이슈는 `[]` 유지 |
-
-**기존 골든 테스트 `G01~G08`을 수정하거나 기대 결과를 완화하지 않는다.** `tests/harness/golden_cases.yaml`에 기록된 정확한 데이터와 경로를 최종 판정 정본으로 두며, 첨부되지 않은 테스트의 이미 통과했다고 주장하지 않는다.
-
-### 6.2 계산·청구·입금·안내 — 후속 AC
-
-| ID | 수용 기준 |
-|---|---|
-| **CALC1** | `[찬조 공제] → [제외] → [고정 소비 몫/분할] → [대신 부담 이전] → [원 단위 잔액 배정]` 순서 준수, 4대 검증식 1원 오차 없이 만족 |
-| **CALC2** | 확정 찬조는 해당 항목 분담 원금에 먼저 반영하고, 찬조자라는 이유만으로 그 사람을 소비 대상에서 제외하지 않음 |
-| **CALC3** | 분할 시 남은 원 단위 잔액은 지정 1인에게 배정; 미지정이면 검토 차단, 임의 반올림/비용 소멸 금지 |
-| **CLAIM1** | 수취인 = 해당 결제 `payer`; 결제자 자신 또는 최종 부담액 0원 대상 청구 금지 |
-| **CLAIM2** | 같은 승인 ID 재호출 시 같은 계산을 재사용하고 중복 청구 생성 금지; 입력 수정 시 이전 승인 무효화 |
-| **PAY1** | 입금 기록은 수동 대조를 통해서만 확정하고 미확인 거래를 완료액으로 합산하지 않음 |
-| **PAY2** | 동일 실제 입금(`source_transfer_ref`)에 매핑한 총액은 원 실입금액을 넘지 않음 |
-| **NOTICE1** | 확정 송금 결과의 사람·금액 및 확인된 수취 계좌만 안내에 인용하며 미확인 계좌는 창작하지 않음 |
-
-### 6.3 신규 멀티모달 추출 기준 — 제안
-
-| ID | 수용 기준 |
-|---|---|
-| **EXTRACT1** | 영수증에서 보이지 않는 금액·사람·품목을 추정하지 않고 미확정 상태/이슈로 표기 |
-| **EXTRACT2** | 같은 앱 설정 `GEMINI_MODEL`을 영수증/자연어 파싱에서 사용하되 프롬프트/출력 스키마는 용도별 분리 |
-| **EXTRACT3** | 추출 결과는 사용자 검토 전에는 지출/정산 결과를 영속적으로 확정하거나 청구를 발행하지 않음 |
-| **EXTRACT4** | 음성·이미지·텍스트 내부의 '규칙 무시' 지시문을 정책 변경 명령으로 실행하지 않음 |
-| **EXTRACT5** | 원본 파일/원문·모델 제안·검토 수정본 및 버전 정보가 보존되고 변경 시 이전 확정 데이터 자동 덮어쓰기 금지 |
-| **EXTRACT6** | 실패한 API 호출, 구조화 실패, 항목 합계 불일치는 성공처럼 처리하지 않으며 확인 이슈를 표시 |
-
-## 7. 골든 테스트, 측정, 기술 스파이크
-
-### 7.1 기존 회귀 하니스
-
-- `tests/harness/golden_cases.yaml`의 G01~G08은 AC1~AC6과 일치하도록 **실제 파일의 기대값**을 확인한다.
-- `tests/test_context_review_golden.py`를 우선 실행하고 그다음 전체 테스트를 실행한다.
-- 기존 테스트는 임의 삭제, 수정, `skip`, `xfail` 처리하지 않는다.
-- 검사 항목: 이슈의 정확한 `(code, path)`, 입력 불변성, 총액/예외/잔액 판정, 계산 합계, 청구 버전 멱등성.
-
-### 7.2 Gemini 복합 추출 스파이크(사전 계획)
-
-**검증하려는 가정:** 복합 영수증 이미지 + 자연어 발화를 제공할 때 중요 필드의 추출 결과가 정답과 정확히 일치하는 비율이 90% 이상인가?
-
-- **Timebox:** 6시간. **블라인드 세트:** 30건 (프롬프트 튜닝에 사용하지 않은 사례).
-- **라벨링:** 독립된 팀원 2명이 서로 상의하지 않고 30건의 정답 `RequestContext`를 작성한다. 불일치는 온톨로지 정의를 참조해 합의한다.
-- **정답 불가능:** 발화가 지나치게 모호하여 합의할 수 없으면 사례를 교체하고 30건을 유지하되, 교체 건수와 이유를 보고한다.
-- **완벽 일치:** `participants`, `expenses[].items`, `split_rules[].participant_names`, `exceptions` 핵심 필드가 **모두** 정답과 같아야 해당 사례를 1건 성공으로 센다. 사람 누락·품목 총액 오류·제외자 오지정은 실패다.
-- **사전 합격선:** **27/30건 이상** (90.0% 이상).
-- **기록:** 테스트 날짜, 모델의 정확한 ID, 입력 이미지/발화 익명화 식별자, 정답/예측 JSON, 불일치 유형, 결과 로그.
-
-제공된 문안에는 **26/30건(86.7%)이라는 실행 결과**가 기재되어 있지만, 원본 평가 데이터나 실행 로그가 첨부되지 않았으므로 본 스펙에서는 **주장된 과거 결과(검증 전)**로 구분한다. 이 수치가 실제 결과로 확인되면 합격선 미달로 판정하고, **영수증 화면 검수 → 별도 자연어 조건 입력 → 근거 연결/검토**의 단계 분리안을 채택한다. 단계 분리 자체는 데이터 검증 여부와 무관하게 안전한 기본 설계로 사용한다.
-
-## 8. 저장소 경로와 운영
+### 5.1 AI 및 직접 균등 정산의 공통 처리 경계
 
 ```text
-detox-main/
-├─ AGENTS.md
-├─ docs/
-│  ├─ ontology.yaml
-│  ├─ ontology.md
-│  ├─ SPEC.md
-│  ├─ PROBLEM.md
-│  └─ research/interviews_union.md
-├─ src/settlements/
-│  ├─ parser.py
-│  ├─ receipt_api.py
-│  ├─ receipt_ocr.py
-│  ├─ receipt_fields.py
-│  ├─ receipt_draft.py
-│  ├─ calculator.py
-│  ├─ allocation_math.py
-│  ├─ workflow.py
-│  ├─ workflow_store.py
-│  ├─ prompts/parse_query.md
-│  └─ schemas/request_context.schema.json
-└─ tests/
-   ├─ test_context_review_golden.py
-   └─ harness/golden_cases.yaml
+자연어 문장 ── Gemini 문장 파싱 ───┐
+                                 ├─→ RequestContext 후보 → 스키마/의미 검토 → 사용자 수정·승인
+영수증 이미지 ─ Gemini 이미지 추출 ──┘                              │
+    └─ 이미지 사실 검수 및 정산 조건 별도 확인                      ↓
+                                                     Python 원 단위 계산
+                                                              ↓
+                                             Allocation / SettlementResult
 ```
 
-**추가/교체 예정:** `src/settlements/gemini_client.py`, `src/settlements/receipt_reader.py`, `src/settlements/prompts/receipt_extraction.md`. 기존 `receipt_ocr.py`는 참조 관계와 테스트 확인 후 교체/호환 래퍼 유지 여부를 결정한다. 프로젝트 트리에서 `app.py`, `requirements-web.txt`, `requirements-ocr.txt`가 `tests/` 아래에 표시되어 있어 현재 파일의 실제 위치를 확인한 후 실행 명령을 확정한다.
+**직접 N분의 1**은 Gemini 없이 사용자가 `RequestContext`를 구성한 후 같은 승인·계산 경로를 이용한다. **직접 차액 정산**은 별도 모바일 로컬 경로에서 사용자 지정 송금 목록을 표시한다.
 
-PowerShell **저장소 루트에서** 실행하는 표준 검증 명령(의존성/경로가 준비된 후):
+### 5.2 실제 구현 HTTP API (루트 `app.py` 기준)
 
-```powershell
-$env:PYTHONPATH = "src"
-python -m pytest tests/test_context_review_golden.py -v
-python -m pytest tests -v
-```
-
-실행 서버 진입점은 `app.py`의 실제 위치에 따라 `uvicorn app:app` 또는 `uvicorn tests.app:app` 등으로 달라지므로 코드 확인 전 고정하지 않는다. `.env`의 실제 값 및 영수증/계좌 데이터는 커밋하지 않는다.
-
-## 9. 위험과 의사결정 원칙
-
-| 위험 | 영향 | 완화 |
+| 메서드·경로 | 역할 | 구분 |
 |---|---|---|
-| 이미지에서 사람 이름과 품목/차수 혼동 | 잘못된 부담자 청구 | 영수증/발화 분리 추출, 근거·미확정 표시, 사용자 검토 |
-| JSON Schema는 통과하지만 의미상 잘못된 데이터 | 조용한 오계산 | `review_context`·골든 테스트·승인 게이트 |
-| Gemini API의 출력 스키마 지원 차이 | 런타임 구조화 실패 | 모델용 지원 스키마와 로컬 Draft 7 검증 분리 |
-| 1원 잔액 또는 찬조 배정 누락 | 합계 불일치 | Python 정수 연산, CALC1~3 및 4대 합계식 |
-| 재추출/재계산으로 이전 승인·청구 덮어쓰기 | 중복 청구/입금 추적 오류 | 버전/해시/멱등 키, 트랜잭션 |
-| 테스트 결과의 근거 부족 | 제품 완성도 오판 | 실패 로그·원본 테스트 데이터·실행 명령 기록 |
+| `POST /parse` | 텍스트·선택적 근거 파싱과 확인 이슈 반환; 세션 저장 없음 | 구현 |
+| `POST /api/sessions` | AI 입력에서 검토용 세션 생성 | 구현 |
+| `POST /api/sessions/manual` | 사용자가 구성한 DTO로 검토용 세션 생성 | 구현 |
+| `GET /api/sessions`, `GET /api/sessions/{sid}` | 세션 목록/상세 | 구현 |
+| `PATCH /api/sessions/{sid}/context` | 지정 입력 버전 수정 | 구현 |
+| `POST /api/sessions/{sid}/confirm` | 검토 기록 확인 후 승인 | 구현 |
+| `POST /api/sessions/{sid}/calculate` | `confirmation_id`로 Python 계산 | 구현 |
+| `POST /api/receipts` | 영수증 이미지 업로드 및 Gemini 항목 후보 추출 | 구현 |
+| `POST /api/receipts/{rid}/review`, `POST /api/receipts/{rid}/draft`, `POST /api/receipts/{rid}/ai` | 영수증 검수·직접 입력·AI 조건 적용 | 구현 |
+| `GET /api/receipts/{rid}`, `GET /api/receipts/{rid}/image`, `GET /receipts/new` | 영수증 상태·이미지·웹 검수 화면 | 구현 |
+| `GET /api/receipts/{rid}/handoff`, `POST /api/receipts/{rid}/session`, `GET /api/sessions/{sid}/receipt` | 검토 근거 인계·레거시 세션 연결·원본 영수증 역참조 | 구현 |
+| `POST /api/receipts/multimodal-preview` | 사진/설명 입력에서 **검토 후보만** 반환 | 구현 |
+| `POST /api/receipts/multimodal-confirm` | 사용자 검수 근거를 문장 파서에 전달 | 구현 |
+| `POST /api/sessions/multimodal` | 레거시 호환: 자동 확정 없이 미리보기 | 구현 |
+| `GET /api/schema`, `GET /` | 입력 스키마, 웹 시작 화면 | 구현 |
 
-## 10. 추적 관계
+**주의:** 이 표는 저장소 코드에 라우트가 있다는 뜻이며 배포 서버의 현재 실행 버전과 동일하다는 보증이 아니다. `GET /health`나 자동 송금 API는 확인된 구현 인터페이스로 표기하지 않는다.
 
-`docs/research/interviews_union.md` → `docs/PROBLEM.md` → `docs/ontology.yaml` (개념 정본) → `src/settlements/schemas/request_context.schema.json` (입력 계약) → `docs/SPEC.md` (수용 기준) → `tests/harness/golden_cases.yaml` + `tests/test_context_review_golden.py` (실행 검증).
+### 5.3 오류·승인 계약
 
-실제 구현과 문서가 충돌하면 **기존 테스트를 약화시키지 말고** DTO 계약·온톨로지·수용 기준의 충돌 지점을 명시하여 수정안을 검토한다.
+- 스키마/필수 조건 미충족은 422 또는 검토 이슈를 반환하며 잘못된 값을 추측해 고치지 않는다.
+- 세션 버전 충돌, 미해결 조건으로 승인 시도, 이전 `confirmation_id` 사용은 409로 차단한다.
+- SDK/모델 장애로 파싱에 실패하면 오류를 반환하고 사용자가 직접 입력할 수 있도록 한다.
+- 같은 `confirmation_id`를 다시 계산하면 기존 계산 결과를 재사용하며 중복 청구를 만들지 않는다.
+- 송금액 안내는 확인된 계산 결과만 사용하고 실제 송금은 실행하지 않는다.
+
+## 6. 수용 기준(AC) — MVP와 후속의 명시적 구분
+
+**원칙:** 기존 AC1~AC6 및 골든 G01~G08의 기대값은 변경하지 않는다. 아래 `MVP` 열이 `예`인 수용 기준만 **이번 중간평가의 MVP 포함 AC**다. 나머지는 후속 목표로 관리한다. 모든 금액은 가상 예시이며 실제 API 모델 출력의 정확도를 보증하지 않는다.
+
+### 6.1 기존 검토 기능 — 모두 **MVP 대상**
+
+| AC | EARS 조건과 동작 | 판정 기준 | MVP |
+|---|---|---|---|
+| **AC1** | 정상/최소 입력이 주어지면 시스템은 불필요한 확인 이슈를 생성하지 않는다. | G01/G02 `expect_issue_count=0`, 전체 `(code,path)=[]` | **예** |
+| **AC2** | 참여자·결제 정보 또는 결제자 정보가 없으면 시스템은 확인 항목을 반환한다. | G03/G04 이슈 코드·경로 정확히 일치 | **예** |
+| **AC3** | 결제 총액과 항목 합계가 다르면 시스템은 원본을 그대로 두고 `item_sum_mismatch`를 반환한다. | G05 | **예** |
+| **AC4** | 항목 예외 연결이나 방식이 불명확하면 시스템은 임의 적용 없이 확인을 요청한다. | G06 | **예** |
+| **AC5** | 균등 분할에 1원 단위 잔액이 남는데 귀속 대상이 없으면 시스템은 `unresolved_rounding`을 반환한다. | G07 | **예** |
+| **AC6** | 확인 요청 또는 공격성 문구가 들어오면 시스템은 입력을 변경하지 않고 지시문을 데이터로 취급한다. | G01~G08 입력 불변, G08 인젝션 | **예** |
+
+### 6.2 네 가지 체험 경로 — **MVP 대상**
+
+| AC | EARS 조건과 동작 | 관측 가능한 기대 결과 | MVP |
+|---|---|---|---|
+| **MVP1** | 사용자가 자연어로 사람·결제·항목·분담 조건을 입력하면 시스템은 구조화 후보와 확인 문제를 보여 준다. | 8.1의 84,000원 예시에서 정확한 조건이 확인되면 3인 부담액이 32,000/32,000/20,000원 | **예** |
+| **MVP2** | 사용자가 영수증과 조건 설명을 업로드하면 시스템은 이미지 항목·금액 후보를 보여주고 수정/검토를 요구한다. | 업로드 직후 자동 최종 정산/송금 없음; 누락·합계 불일치 시 확인 경고 | **예** |
+| **MVP3** | 사용자가 90,000원, 3명, 민수 결제의 직접 균등 정산을 확인하면 Python 계산기가 분담한다. | 각 30,000원, 지훈·영희 → 민수 각 30,000원 | **예** |
+| **MVP4** | 사용자가 직접 송금 지시 20,000원+15,000원을 입력하면 모바일 화면은 합계가 35,000원일 때만 로컬 정산 목록을 만든다. | 지훈→민수 20,000원, 영희→민수 15,000원; 불일치·자기 자신에게 송금이면 생성 차단 | **예(로컬)** |
+| **MVP5** | 사용자가 수정 전 또는 승인 없이 계산을 시도하면 시스템은 실행을 차단한다. | 검토 조건 승인 기록과 버전이 맞을 때만 계산; 재계산 멱등 | **예** |
+| **MVP6** | 계산된 정산이 있으면 시스템은 개인별 부담액과 송금자를 보여 주고 공유용 안내를 제공한다. | 결제자 자기 청구/0원 송금 요청 없음; 자동 계좌이체 없음 | **예** |
+
+### 6.3 정산의 불변 규칙 — **MVP 대상**
+
+| AC | 판정 가능한 규칙 | MVP |
+|---|---|---|
+| **CALC1** | 확정 찬조 공제 → 항목 제외/합의 몫 → 기본 분배 → 대신 부담 → 원 단위 잔액 귀속; 항목·결제·청구 합계에서 1원 오류 없음 | **예** |
+| **CALC2** | 찬조자라는 이유만으로 소비 대상 제외하지 않고 확정된 항목별 찬조액만 공제 | **예** |
+| **CALC3** | 미지정 원 단위 잔액을 몰래 버리거나 반올림하지 않고 확인 이슈로 계산 차단 | **예** |
+| **CLAIM1** | 실제 결제자가 수취인이며 결제자 자기 자신·0원 대상 송금 요청 금지 | **예** |
+| **CLAIM2** | 동일 승인 반복 계산 시 중복 청구 없음, 수정 시 과거 승인 ID 사용 차단 | **예** |
+| **EXTRACT1** | 근거 없는 사람·금액·항목을 추측하지 않고 불명확하면 확인 대상으로 둠 | **예** |
+| **EXTRACT2** | 텍스트·영수증은 같은 `GEMINI_MODEL` 설정 사용, 서로 다른 프롬프트/출력 스키마 사용 | **예** |
+| **EXTRACT3** | 영수증/문장 추출 후보는 사용자 승인 전 계산·송금 요청으로 확정하지 않음 | **예** |
+| **EXTRACT4** | 영수증/텍스트 속 지시문이 정책이나 합계 계산을 변경하지 못함 | **예** |
+| **EXTRACT5** | 원문·검토 수정본·입력 버전이 구분되고 무단 덮어쓰기 금지 | **예** |
+| **EXTRACT6** | API 장애·JSON 형식 실패·합계 불일치를 정상 추출 성공으로 둔갑시키지 않음 | **예** |
+
+### 6.4 **후속 AC — 중간평가 MVP 제외**
+
+| AC | 후속 완료 기준 | MVP |
+|---|---|---|
+| **PAY1** | 서버에서 수동 대조 확인한 입금만 완료액에 합산 | **아니오** |
+| **PAY2** | 동일 실제 입금의 청구별 매핑 합이 실제 입금액을 초과하지 않음 | **아니오** |
+| **NOTICE1** | 계좌가 확인된 경우만 이를 포함하고 관계·말투별 재안내의 서버 기록을 관리 | **아니오** |
+| **SYNC1** | 직접 차액 정산의 서버 저장과 타 기기에서 동기화/복원 | **아니오** |
+| **TRANSFER1** | 은행 이체 및 메신저 실제 자동 발송 | **아니오/제품 범위 밖** |
+
+## 7. 골든 테스트와 Evals 연결
+
+### 7.1 결정 층 — 골든/회귀 테스트
+
+- 원본: `tests/harness/golden_cases.yaml` G01~G08 (정상·경계·금지 행동, AC1~AC6).
+- 하니스: `tests/test_context_review_golden.py`가 YAML을 읽고 `(code,path)`, 건수, 원본 불변 여부를 판정.
+- 계산: `tests/test_calculator.py`, `test_calculator_basic.py`, `test_calculator_regression.py`, `test_complex_settlement_improvements.py` 등.
+- API/검수: `tests/test_web_api.py`, `test_receipt_api.py`, `test_multimodal_integration.py` 등.
+- **검증 공백:** `MVP4` 직접 차액 정산은 모바일 로컬 코드 경로만 확인했다. 해당 화면을 누르는 자동 테스트 또는 현장 시연 증거가 아직 없음. 이 부분을 4단계 검증 보완 대상으로 둔다.
+- 결함 주입 기록: `docs/prompts/delegation_<기능>.md`에 실제 주입 결함·실패 케이스·원복 후 결과를 남겨야 한다. 작성/실행되지 않은 기록을 생성했다고 주장하지 않는다.
+
+### 7.2 통계 층 — 강의 7 Evals **4단계 구축 현황**
+
+4단계에서 `evals/EVAL_DESIGN.md`, `evals/evalset.jsonl` **35개(자연어 31, 합성 영수증 4)**, `evals/run_evals.py`, `evals/results/<run_id>.json`, `evals/results/history.csv`, `docs/prompts/delegation_evals.md`를 마련했다. 저장 출력(`--mode stored`) 35건은 **채점기 검증 결과로, Gemini 실측 점수가 아니다**. 실제 모델 평가는 환경에 API 키를 설정하고 `--mode live`로 실행해야 한다. 현재 구조화 정산 추출은 코드로 판정 가능하므로 judge는 사용하지 않으며, `judge_prompt.md`와 사람 라벨은 주관적 문구 평가를 도입할 때 작성한다.
+
+| 평가 지표 | 평가 단위·방법 | 연결 AC | 성격 |
+|---|---|---|---|
+| 핵심 정산 필드 일치율 | 참가자·원금·품목·분담 대상·예외가 **모두** 근거와 맞는 케이스 비율, 코드 채점 | MVP1, EXTRACT1 | 능력 지표 |
+| 영수증 필드 정확성 | 사람의 정답 레이블이 있는 이미지의 품목/금액 일치, 코드 채점 | MVP2, EXTRACT1·6 | 능력 지표 |
+| JSON/DTO 형식 준수율 | JSON Schema 통과 비율, 코드 채점 | AC1~6, EXTRACT2 | 절대 제약 |
+| 확인 요청 적중률 | 누락·모호·충돌 입력에서 계산 없이 확인 항목 반환한 비율, 코드 채점 | AC2~5, MVP5 | 안전 제약 |
+| 금액/사람 환각 건수 | 근거 없는 사람·원금·예외 또는 규칙 무시 지시를 실행한 건수 | AC6, EXTRACT1·4 | 절대 제약 |
+| 최종 부담/송금 금액 정확성 | *정답 구조화 입력*으로 계산한 결과의 원화 정수 정확성 | CALC1~3, CLAIM1 | 결정적 검사(골든) |
+
+**2026-11-17 확정 목표: 핵심 추출 정확도 90% 이상.** `text_case_pass_rate`와 `receipt_case_pass_rate`를 각각 평가하며, 영수증은 실물 사진 평가셋을 확대하기 전까지 최종 통과 판정을 보류한다. 안전 절대 규칙(인젝션·임의 청구)은 0건 위반, 형식/확정 차단은 100% 충족을 목표로 한다. 평가 케이스 기대값 및 그 외 기준은 팀의 검토 대상이다. **Gemini 라이브 베이스라인은 아직 측정하지 않았으므로 90% 달성 여부는 미확인**이다.
+
+평가 데이터는 정상 요청 외에 적어도 **두 가지 이상**의 경계·실패 범주(예: `conflict`, `clarify`, `injection`, `receipt_mismatch`, `hallucination`)를 포함하며, `id/category/query/expect/graders/note`를 갖춘다. 러너는 각 케이스의 출력과 판정 사유, 실행 커밋·모델·데이터셋 버전·변경 내용을 이력에 남긴다. **저장된 응답 기반 테스트와 실제 Gemini 호출 평가를 명확히 구분**한다.
+
+## 8. README용 MVP 체험 시나리오와 정답 (가상 데이터)
+
+| 시나리오 | 입력·절차 | 정답(조건이 정확히 추출·승인된 경우) | 관련 AC |
+|---|---|---|---|
+| **8.1 자연어 복합 정산** | 민수·지훈·영희 / 민수 총 84,000원 결제 / 식사 60,000원 3인 균등 / 술 24,000원 영희 제외 | 민수 32,000원, 지훈 32,000원, 영희 20,000원. **지훈→민수 32,000원, 영희→민수 20,000원** | MVP1·MVP5·MVP6, AC1·6, CALC1, CLAIM1 |
+| **8.2 영수증+설명** | JPG/PNG + “민수가 결제, 술은 민수와 지훈만” | 품목/원금은 **영수증 사진의 실제 내용에 종속**, 사람·술값 제외는 추가 설명/검토로 확인. 임의 숫자 기대값 없음 | MVP2·MVP5, EXTRACT1·3·6 |
+| **8.3 직접 N분의 1** | 90,000원/민수 결제/민수·지훈·영희 3인 | 1인 30,000원. **지훈→민수, 영희→민수 각 30,000원** | MVP3·MVP5·MVP6, CALC1, CLAIM1 |
+| **8.4 직접 차액 정산** | 사용자 지정 송금 총액 35,000원; 지훈→민수 20,000원, 영희→민수 15,000원 | 두 송금 목록 표시, 합계 35,000원. **기기 로컬 저장**, 서버 승인·계산 경로 없음 | MVP4 |
+
+**시나리오 8.1/8.3**의 정답은 `calculate_settlement()`에 *해석 완료된 DTO*를 전달해 코드로 검증할 수 있다. 실제 Gemini 실측이나 앱 배포 확인을 대신하지 않는다. **시나리오 8.2**는 개인정보 없는 고정 테스트 영수증 이미지와 사람이 작성한 예상 품목/금액 라벨이 있어야 정확도를 판정할 수 있다.
+
+
+
+## 9. 위험·검증 공백 및 문서 추적
+
+| 위험/공백 | 영향 | 대책/완료 판정 |
+|---|---|---|
+| 영수증에서 사람 이름·품목·차수 혼동 | 잘못된 송금액 | 영수증 추출과 소비 조건 추출을 구분하고 검수 게이트에서 수정; 실제 이미지 Evals로 측정 |
+| 사용자 말과 영수증 금액 충돌 | 잘못된 지출 원금 | 양쪽 후보 보존, 자동 덮어쓰기 금지, 사용자 선택 필요 |
+| 직접 차액 정산은 모바일 로컬 저장 | 기기 교체·재설치 시 기록 유실, 서버와 불일치 | MVP에서는 로컬임을 알리고 시연 검증; 서버 동기화 후속 `SYNC1` |
+| 기존 UI와 배포 APK가 다름 | 평가자 혼란 | APK와 배포 URL의 빌드 버전, 시나리오별 화면 확인 |
+| API 키/SDK 또는 모델 접근 문제 | AI 정산 실패 | 로컬 의존성 검사, 실제 키로 호출 확인, 사용자 지정 정산 대체 경로 |
+| 정산 1원 잔액·찬조 부정확 | 총액 불일치 | Python 정수/분수 산술, AC5/CALC1~3 골든/회귀 검증 |
+| Gemini 라이브 Evals 베이스라인 미측정 | 실제 AI 품질 근거 미확정 | stored 하니스 검증과 별개로 API 키 있는 환경에서 `--mode live` 최초 실행 후 결과·이력 확인 |
+
+**추적 경로:** `docs/research/interviews_union.md` → `docs/PROBLEM.md` → `docs/ontology.yaml` → `src/settlements/schemas/request_context.schema.json` → `docs/SPEC.md` → `tests/harness/golden_cases.yaml`·`tests/` → `evals/EVAL_DESIGN.md`·`evals/evalset.jsonl`·`evals/results/`.
+
+`AGENTS.md`, 테스트 기대값, API 응답 계약이 이 SPEC과 모순되면 **검증 기준을 몰래 낮추지 않고** 차이를 기록한 후 팀이 수정 여부를 결정한다.

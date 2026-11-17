@@ -1,17 +1,32 @@
 import os
 import json
-from google import genai
+from functools import lru_cache
+from src.settlements.gemini_client import get_model
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 # 1. 환경변수 로드
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    raise ValueError("❌ .env 파일에서 GEMINI_API_KEY를 찾을 수 없습니다.")
+# 이 파일은 수동 대화 데모다. pytest가 파일을 수집할 때
+# SDK import / API 키 검증 / 네트워크 클라이언트 생성이 발생하면 안 된다.
+@lru_cache(maxsize=1)
+def _get_client():
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY가 없습니다. 저장소의 .env 파일 또는 환경변수에 설정하세요."
+        )
 
-client = genai.Client(api_key=api_key)
+    try:
+        from google import genai  # pip install google-genai
+    except ImportError as exc:
+        raise RuntimeError(
+            "Google Gen AI SDK가 설치되지 않았습니다. "
+            "python -m pip install -r requirements.txt 를 실행하세요."
+        ) from exc
+
+    return genai.Client(api_key=api_key)
 
 # 2. Pydantic 스키마 정의
 class ItemException(BaseModel):
@@ -39,8 +54,8 @@ def parse_input(text: str) -> SettlementRequestContext:
     [입력문]
     {text}
     """
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
+    response = _get_client().models.generate_content(
+        model=get_model(),
         contents=prompt,
         config={
             "response_mime_type": "application/json",
@@ -97,8 +112,8 @@ def generate_response(user_text: str, calc_summary: str, tone: str):
 
     계좌번호 작성 안내([은행] [계좌번호])와 정산 내역을 깔끔하게 포함해라.
     """
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
+    response = _get_client().models.generate_content(
+        model=get_model(),
         contents=prompt
     )
     return response.text

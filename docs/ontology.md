@@ -1,7 +1,6 @@
 # Smart Settlement Agent (detox) — 온톨로지 v3.6
 
-> 정본: [`ontology.yaml`](ontology.yaml)  
-> 문서 상태: **설계 개정안** (2026-11-11). 실제 코드와 회귀 테스트 통과 여부는 검증 전이다.  
+> 정본: [`ontology.yaml`](ontology.yaml)    
 > 관련 문서: [`SPEC.md`](SPEC.md), [`PROBLEM.md`](PROBLEM.md), [`research/interviews_union.md`](research/interviews_union.md), `../src/settlements/schemas/request_context.schema.json`
 
 ## 1. 목적과 범위
@@ -41,25 +40,6 @@ detox는 영수증 이미지와 자연어 정산 조건을 받아 **누가 무�
 
 ## 3. 클래스 간 관계
 
-```mermaid
-flowchart TD
-    S[SettlementSession] --> P[Participant]
-    S --> E[Expense]
-    E -->|payer| P
-    E --> I[Item]
-    E -.-> R[receipt: 증빙]
-    E -.-> C[subsidy: 찬조·항목별 적용]
-    I --> SR[SplitRule]
-    I --> IE[ItemException]
-    SR --> A[Allocation]
-    IE --> A
-    I --> A
-    A --> ST[SettlementResult]
-    ST -.-> PC[payment_checks: 입금 대조]
-    ST -.-> RM[reminder: 송금 안내]
-```
-
-화살표는 개념적 참조/입출력 관계이며, 반드시 독립 테이블로 구현해야 한다는 뜻은 아니다.
 
 ### 3.1 혼동하면 안 되는 개념
 
@@ -92,21 +72,10 @@ flowchart TD
 
 ## 5. 입력 파이프라인: Gemini 단일 모델, 역할 분리
 
-```mermaid
-flowchart LR
-    A[영수증 이미지] --> M[Gemini Flash]
-    B[자연어 발화] --> M
-    M --> O[추출 JSON]
-    O --> V[스키마·의미 검증]
-    V --> H[사용자 검토·승인]
-    H --> P[Python 산술 엔진]
-    P --> X[Allocation / SettlementResult]
-    X --> N[송금 안내 초안]
-```
 
-- **통합 방향:** 모델 설정 `GEMINI_MODEL=gemini-3.8-flash`를 계획값으로 사용하고, 이미지 추출/자연어 파싱은 동일 SDK 클라이언트와 모델 설정을 공유한다. 실제 호출 가능 여부와 프로젝트 연동은 구현·실행으로 별도 검증한다.
+- **통합 방향:** 모델 설정 `GEMINI_MODEL=gemini-3.5-flash`를 기본값으로 사용하고, 이미지 추출/자연어 파싱은 동일 SDK 클라이언트와 모델 설정을 공유한다. 실제 호출 가능 여부와 프로젝트 연동은 구현·실행으로 별도 검증한다.
 - **프롬프트는 분리:** 영수증은 관찰 가능한 상호·일시·품목·수량·금액에 집중하고, 발화는 참석·예외·찬조·결제자를 입력 DTO로 변환한다. 두 입력의 모호성을 한 단계에서 임의로 합쳐 확정하지 않는다.
-- **PaddleOCR 처리:** 제거/대체는 기존 `receipt_ocr.py` 호출부와 테스트를 점검한 후 수행한다. 이미지 회전, 용량, 확장자 및 안전 검증은 OCR 제거와 무관하게 유지한다.
+- **PaddleOCR 처리:** 실행 의존성과 기존 `receipt_ocr.py` 모듈을 제거하고 `receipt_reader.py`의 Gemini 추출로 교체했다. 이미지 회전, 용량, 확장자 및 안전 검증은 OCR 제거와 무관하게 유지한다.
 - **입력 불변:** 원본 사진, 원문 발화, 모델 추출물, 사용자 수정본, 승인 버전/해시를 분리해 기록한다.
 - **안전:** 발화·영수증 안의 지시문은 외부 **데이터**다. API 키/계좌/원본 영수증을 프롬프트 출력, 로그, 저장소에 노출하지 않는다.
 

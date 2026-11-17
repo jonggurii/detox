@@ -2,7 +2,7 @@
 
 ## 위험한 가정
 
-영수증 OCR 텍스트와 “술 안 마신 2명 빼줘” 같은 복합 구어체 예외 발화가 섞여도 `gemini-3.6-flash`가 `SettlementRequestContext` Pydantic 스키마로 요구 품질 이상 정확하게 구조화할 수 있다고 가정한다.
+영수증 OCR 텍스트와 “술 안 마신 2명 빼줘” 같은 복합 구어체 예외 발화가 섞여도 `gemini-3.5-flash`가 `SettlementRequestContext` Pydantic 스키마로 요구 품질 이상 정확하게 구조화할 수 있다고 가정한다.
 
 ## 시간 제한
 

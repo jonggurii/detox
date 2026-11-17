@@ -1,8 +1,6 @@
 # Smart Settlement Agent (detox) — 개념 온톨로지
 
 version: '3.6'
-status: proposed
-last_updated: '2026-11-11'
 source_of_truth: docs/ontology.yaml
 references:
   problem: docs/PROBLEM.md
@@ -251,10 +249,10 @@ input_structures:
 processing_contract:
   extraction:
     model_setting: GEMINI_MODEL
-    planned_model: gemini-3.8-flash
+    planned_model: gemini-3.5-flash
     channels: [receipt_image, natural_language_text]
     role: '관찰 가능한 텍스트/품목/금액/규칙 추출만; 금액 합산·확정·송금 실행 금지'
-    implementation_status: '설계 목표; 현재 repository 소스 검증 전'
+    implementation_status: 'SDK 기반 이미지·텍스트 추출 연결 구현; 실제 키 사용 모델 응답 미검증'
   validation:
     - 'JSON Schema 형식 검증은 review_context 의미 검증 및 사용자 승인과 다르다.'
     - '인식 오류·모호성은 사용자 확인 이슈로 남긴다.'
