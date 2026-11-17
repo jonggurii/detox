@@ -3,7 +3,7 @@ import {ActivityIndicator,Alert,BackHandler,Keyboard,KeyboardAvoidingView,Platfo
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
-import {sessionApi,previewImage,confirmImage} from '../services/api';
+import {sessionApi,previewImage,confirmImage,reminderApi} from '../services/api';
 import type {ImagePreview} from '../services/api';
 import type {Calculation,Json,Session,SessionSummary} from '../services/api';
 
@@ -317,6 +317,8 @@ const [imageNotes, setImageNotes] = useState('');
  const [sourceEvidence,setSourceEvidence]=useState<string|null>(null);
  const [manualPayer,setManualPayer]=useState('');const [manualItem,setManualItem]=useState('식사비');const [manualAmount,setManualAmount]=useState('');const [manualRound,setManualRound]=useState('1');
   const [reminderOpenKey,setReminderOpenKey]=useState<string|null>(null);
+  const [aiReminders,setAiReminders]=useState<Record<string,{message:string;source:'gemini'|'template'}>>({});
+  const [aiReminderBusyKey,setAiReminderBusyKey]=useState<string|null>(null);
  const [editorFocus,setEditorFocus]=useState<{section:string;index:number}|null>(null);
  const [paymentFilter,setPaymentFilter]=useState<PaymentFilter>('all');const [showAdvanced,setShowAdvanced]=useState(false);const [menuSid,setMenuSid]=useState<string|null>(null);const [checks,setChecks]=useState<Record<string,boolean>>({});const [reviewer,setReviewer]=useState('');const [reviewNote,setReviewNote]=useState('조건 확인 완료');
 
@@ -603,6 +605,7 @@ const [imageNotes, setImageNotes] = useState('');
  const PaymentList=({d,calc}:{d:Session;calc:Calculation})=>{
   const sid=d.session_id;
   const paid=meta[sid]?.transferPaid||{};
+  const externalOnly=d.revisions[d.revisions.length-1]?.context?.reminder_handling==='external_service_only';
   const stats=paymentStats(calc,paid);
   const filtered=stats.rows.filter(t=>paymentFilter==='all'||(paymentFilter==='paid'?!!paid[t.key]:!paid[t.key]));
   const markPaid=(key:string,next:boolean)=>setLocal(sid,{transferPaid:{...paid,[key]:next}});
@@ -633,6 +636,26 @@ const [imageNotes, setImageNotes] = useState('');
      {text:'취소',style:'cancel'},{text:'안내했어요',onPress:save}
     ]);
    };
+   const createAiReminder=async(t:typeof stats.rows[number],tone:ReminderTone,repeat:boolean,cacheKey:string)=>{
+    if(aiReminderBusyKey)return;
+    setAiReminderBusyKey(cacheKey);
+    try {
+     const isLocal=sid.startsWith('local-diff-');
+     const data=await reminderApi.generate({
+      session_id:sid,
+      calculation_id:isLocal?null:(calc as any).calculation_id,
+      from_participant:t.from_participant,
+      to_participant:t.to_participant,
+      ...(isLocal?{local_amount:t.amount}:{}),
+      title:meta[sid]?.title||'모아정산',tone,repeat,
+     });
+     setAiReminders(prev=>({...prev,[cacheKey]:{message:data.message,source:data.source}}));
+     setMessage(data.source==='gemini'?'Gemini가 만든 문구를 확인한 후 복사·공유해 주세요.':'Gemini 연결이 원활하지 않아 기본 문구로 안내합니다.');
+    } catch(e:any){
+     setAiReminders(prev=>({...prev,[cacheKey]:{message:reminderText(meta[sid]?.title||'모아정산',t.from_participant,t.to_participant,t.amount,tone,repeat),source:'template'}}));
+     setMessage('AI 문구 생성에 실패해 기본 문구를 표시합니다. 서버 상태를 확인해 주세요.');
+    } finally {setAiReminderBusyKey(null);}
+   };
    const copyReminder=async(text:string)=>{
     await Clipboard.setStringAsync(text);
     if(Platform.OS==='web')setMessage('안내 문구를 복사했어요. 실제로 보낸 뒤 안내 완료를 기록해 주세요.');
@@ -661,7 +684,8 @@ const [imageNotes, setImageNotes] = useState('');
      <View style={{flexDirection:'row',alignItems:'center',gap:7}}><Text style={styles.muted}>입금 확인</Text><Switch value={!!paid[t.key]} onValueChange={v=>markPaid(t.key,v)} trackColor={{false:'#D7DDD7',true:'#8EC2A9'}} thumbColor={paid[t.key]?C.green:'#F7F8F6'}/></View>
      <Button text="개별 복사" secondary small onPress={()=>copyTransfer(t).catch(e=>Alert.alert('복사 실패',String(e?.message||e)))}/>
      </View>
-     {!paid[t.key]&&<View style={styles.reminderSection}>
+     {!paid[t.key]&&externalOnly&&<Text style={styles.helper}>이 정산은 기존 외부 서비스 알림만 사용하도록 설정되어 개인별 재안내를 만들지 않습니다.</Text>}
+     {!paid[t.key]&&!externalOnly&&<View style={styles.reminderSection}>
       <Pressable onPress={()=>setReminderOpenKey(v=>v===t.key?null:t.key)} style={styles.rowBetween}>
        <Text style={styles.subhead}>개별 안내 · 리마인더</Text>
        <Text style={styles.link}>{reminderOpenKey===t.key?'접기 ▲':'열기 ▼'}</Text>
@@ -670,7 +694,9 @@ const [imageNotes, setImageNotes] = useState('');
       {reminderOpenKey===t.key&&(()=>{
        const tone=tones[t.key]||'friend';
        const repeat=(reminders[t.key]?.count||0)>0;
-       const msg=reminderText(meta[sid]?.title||'모아정산',t.from_participant,t.to_participant,t.amount,tone,repeat);
+       const draftKey=JSON.stringify([sid,t.key,tone,repeat,meta[sid]?.title||'모아정산']);
+       const draft=aiReminders[draftKey];
+       const msg=draft?.message||reminderText(meta[sid]?.title||'모아정산',t.from_participant,t.to_participant,t.amount,tone,repeat);
        return <View style={{gap:9}}>
         <Text style={styles.label}>관계별 말투</Text>
         <View style={styles.wrap}>
@@ -678,7 +704,8 @@ const [imageNotes, setImageNotes] = useState('');
          <Chip text="선배 · 정중" active={tone==='senior'} onPress={()=>chooseTone(t.key,'senior')}/>
          <Chip text="후배 · 편하게" active={tone==='junior'} onPress={()=>chooseTone(t.key,'junior')}/>
         </View>
-        <Text style={styles.muted}>{repeat?'재안내 문구':'첫 안내 문구'} · 현재 계산된 송금액 기준</Text>
+        <Text style={styles.muted}>{repeat?'재안내 문구':'첫 안내 문구'} · {draft?.source==='gemini'?'Gemini 작성':draft?.source==='template'?'기본 문구(대체)':'기본 문구'} · {sid.startsWith('local-diff-')?'직접 입력한 송금액':'확정 계산된 송금액'} 기준</Text>
+        <Button text={aiReminderBusyKey===draftKey?'AI 문구 생성 중…':'✨ Gemini로 안내 문구 만들기'} secondary small disabled={!!aiReminderBusyKey} onPress={()=>createAiReminder(t,tone,repeat,draftKey)}/>
         <Text style={styles.reminderMessage}>{msg}</Text>
         <View style={styles.wrap}>
          <Button text="문구 복사" secondary small onPress={()=>copyReminder(msg).catch(e=>Alert.alert('복사 실패',String(e?.message||e)))}/>
