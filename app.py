@@ -25,6 +25,7 @@ from settlements.parser import (
 )
 from settlements.workflow_store import WorkflowError, WorkflowStore
 from settlements.calculator import CalculationError
+from settlements.netting import net_settlements
 from settlements.receipt_api import receipt_router
 
 from backend.multimodal_router import make_multimodal_router
@@ -79,6 +80,8 @@ class ReminderBody(Body):
     to_participant: str = Field(min_length=1, max_length=100)
     title: str = Field(default="모아정산", max_length=80)
     tone: Literal["friend", "senior", "junior"] = "friend"
+    style: Literal["warm", "playful", "firm", "polite", "gentle", "formal", "friendly", "considerate", "clear"] | None = None
+    optimized: StrictBool = False
     repeat: StrictBool = False
     local_amount: int | None = Field(default=None, gt=0, le=10**12, strict=True)
 
@@ -289,6 +292,14 @@ def create_app(db_path=None, parser=None, ocr=None):
 
     @app.post("/api/reminders/generate")
     def reminder_generate(body: ReminderBody, request: Request):
+        # An explicit style must belong to the selected relationship.
+        allowed_styles = {
+            "friend": {"warm", "playful", "firm"},
+            "senior": {"polite", "gentle", "formal"},
+            "junior": {"friendly", "considerate", "clear"},
+        }
+        if body.style is not None and body.style not in allowed_styles[body.tone]:
+            raise HTTPException(422, "선택한 관계와 세부 말투가 일치하지 않습니다.")
         ip = request.client.host if request.client else "unknown"
         now_mono = time.monotonic()
 
@@ -367,9 +378,13 @@ def create_app(db_path=None, parser=None, ocr=None):
                 )
 
             # 계산 결과에서 송금 금액 조회
+            trusted_rows = (
+                net_settlements(calc["result"]["settlements"])
+                if body.optimized else calc["result"]["settlements"]
+            )
             amount = sum(
                 x["amount"]
-                for x in calc["result"]["settlements"]
+                for x in trusted_rows
                 if x["from_participant"] == body.from_participant
                 and x["to_participant"] == body.to_participant
             )
@@ -389,7 +404,7 @@ def create_app(db_path=None, parser=None, ocr=None):
             to_name=body.to_participant,
             amount=amount,
             tone=body.tone,
-            repeat=body.repeat
+            repeat=body.repeat, style=body.style
         )
 
         return {

@@ -71,7 +71,7 @@ def test_model_sees_no_person_or_money_and_server_locks_header(monkeypatch, tmp_
         assert '지훈 → 민수: 30,000원' in data['message']
         prompt = model.calls[0]['contents']
         assert all(word not in prompt for word in ('지훈', '민수', '30,000', '11조 회식'))
-        assert model.calls[0]['model'] == 'gemini-3.5-flash'
+        assert model.calls[0]['model'] == 'gemini-3-flash-preview'
 
 
 def test_spurious_amount_and_name_are_rejected():

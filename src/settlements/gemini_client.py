@@ -3,7 +3,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 
 
 def get_model() -> str:
@@ -37,4 +37,4 @@ def get_client():
         from google import genai
     except ImportError as exc:
         raise RuntimeError("google-genai를 설치해 주세요: python -m pip install -r requirements.txt") from exc
-    return genai.Client(api_key=key, http_options={"timeout": 60000, "retry_options": {"attempts": 1}})
+    return genai.Client(api_key=key, http_options={"timeout": 1800000, "retry_options": {"attempts": 1}})

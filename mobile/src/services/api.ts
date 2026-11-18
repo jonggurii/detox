@@ -47,9 +47,10 @@ export async function uploadReceipt(uri:string):Promise<Receipt>{
  finally{clearTimeout(timer);}
 }
 export type ReminderTone = 'friend'|'senior'|'junior';
+export type ReminderStyle = 'warm'|'playful'|'firm'|'polite'|'gentle'|'formal'|'friendly'|'considerate'|'clear';
 export type ReminderResponse = {message:string;source:'gemini'|'template';model:string|null;amount_source:'local_manual'|'confirmed_calculation'};
 export const reminderApi = {
- generate:(data:{session_id:string;calculation_id?:string|null;from_participant:string;to_participant:string;local_amount?:number;title:string;tone:ReminderTone;repeat:boolean}) =>
+ generate:(data:{session_id:string;calculation_id?:string|null;from_participant:string;to_participant:string;local_amount?:number;title:string;tone:ReminderTone;style?:ReminderStyle;repeat:boolean;optimized?:boolean}) =>
   request<ReminderResponse>('/api/reminders/generate','POST',data),
 };
 

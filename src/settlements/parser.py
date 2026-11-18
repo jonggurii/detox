@@ -367,52 +367,69 @@ def parse_and_review(
     )
 
     feedback = ""
+    # 신규 프로젝트에서 Gemini 2.5 접근이 제한될 수 있으므로 3.x 모델만 사용한다.
+    # Render의 GEMINI_FALLBACK_MODEL로 대체 모델을 교체하거나 비활성화할 수 있다.
+    fallback = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite").strip()
+    models = [selected]
+    if fallback and fallback != selected:
+        models.append(fallback)
+    generation_schema = _generation_schema(schema)
+    log = logging.getLogger(__name__)
 
     for attempt in (1, 2):
-        # Temporary Gemini failures should not discard reviewed receipt data.
-        models = [selected]
+        # attempt는 JSON 출력/검증 실패 시 형식 수정을 위한 반복이다.
+        # 504 재시도로 동일 모델을 여러 번 장시간 호출하지 않는다.
         last_exc = None
         response = None
+        used_model = selected
         for model_name in models:
-            for retry_index in range(3):
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config={
-                            "system_instruction": prompt + feedback,
-                            "response_mime_type": "application/json",
-                            "response_json_schema": _generation_schema(schema),
-                            "temperature": 0,
-                        },
-                    )
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    status = getattr(exc, "code", None)
-                    try:
-                        status = int(status)
-                    except (TypeError, ValueError):
-                        status = None
-                    # SDK errors may expose status only in their string.
-                    detail = str(exc)
-                    retryable = status in (429, 500, 502, 503, 504) or (
-                        status is None and any(t in detail for t in (
-                            "429", "500 INTERNAL", "502", "503", "504", "UNAVAILABLE", "RESOURCE_EXHAUSTED"
-                        ))
-                    )
-                    logging.getLogger(__name__).warning(
-                        "Gemini parse failed: model=%s attempt=%s status=%s error=%s",
-                        model_name, retry_index + 1, status, detail[:500]
-                    )
-                    if not retryable:
-                        raise ParserAPIError(f"Gemini 요청 실패 (HTTP {status or 'unknown'}). 서버 로그를 확인해 주세요.") from exc
-                    if retry_index < 2:
-                        time.sleep(min(2 ** (retry_index + 1) + random.random(), 8))
-            if response is not None:
+            started = time.perf_counter()
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config={
+                        "system_instruction": prompt + feedback,
+                        "response_mime_type": "application/json",
+                        "response_json_schema": generation_schema,
+                        "temperature": 0,
+                    },
+                )
+                used_model = model_name
+                log.info(
+                    "Gemini parse succeeded: model=%s format_attempt=%s elapsed=%.2fs",
+                    model_name, attempt, time.perf_counter() - started,
+                )
                 break
+            except Exception as exc:
+                last_exc = exc
+                status = getattr(exc, "code", None)
+                try:
+                    status = int(status)
+                except (TypeError, ValueError):
+                    status = None
+                detail = str(exc)
+                retryable = status in (429, 500, 502, 503, 504) or (
+                    status is None and any(token in detail for token in (
+                        "429", "500 INTERNAL", "502", "503", "504",
+                        "UNAVAILABLE", "RESOURCE_EXHAUSTED", "DEADLINE_EXCEEDED",
+                    ))
+                )
+                log.warning(
+                    "Gemini parse failed: model=%s format_attempt=%s status=%s "
+                    "elapsed=%.2fs error=%s",
+                    model_name, attempt, status,
+                    time.perf_counter() - started, detail[:500],
+                )
+                if not retryable:
+                    raise ParserAPIError(
+                        f"Gemini 요청 실패 (HTTP {status or 'unknown'}). 서버 로그를 확인해 주세요."
+                    ) from exc
+                # 일시적 장애면 다음 모델을 사용한다. 마지막 모델까지 실패하면 종료한다.
         if response is None:
-            raise ParserAPIError("Gemini 서버가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요.") from last_exc
+            raise ParserAPIError(
+                "Gemini 모델들이 요청 시간 내에 응답하지 못했습니다. 잠시 후 다시 시도해 주세요."
+            ) from last_exc
 
         candidates = getattr(response, "candidates", None) or []
         finish = (
@@ -540,7 +557,7 @@ def parse_and_review(
             supplied_evidence=supplied_evidence,
             prompt_version=version,
             schema_sha256=digest,
-            model=selected,
+            model=used_model,
             attempts=attempt,
         )
 
