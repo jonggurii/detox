@@ -2,6 +2,7 @@
 from collections import Counter, defaultdict
 from functools import lru_cache
 from .gemini_client import get_client, get_model
+from .receipt_reconciliation import reconcile_reviewed_receipts
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
@@ -468,6 +469,12 @@ def parse_and_review(
                 "같은 원문의 조건만 사용해 형식을 바로잡으세요."
             )
             continue
+
+        # Preserve reviewed receipt items and reconcile only explicitly scoped equal rules.
+        reconciled = reconcile_reviewed_receipts(
+            context.model_dump(exclude_unset=True), supplied_evidence, text
+        )
+        context = validate_context_data(reconciled, schema=schema)
 
         def normalize_explicit_amount_rules(context):
             # Pydantic RequestContext → dict 변환
