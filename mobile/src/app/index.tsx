@@ -1,5 +1,5 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
-import {ActivityIndicator,Alert,BackHandler,Keyboard,KeyboardAvoidingView,Platform,Pressable,ScrollView,Share,StatusBar,StyleSheet,Switch,Text,TextInput,View} from 'react-native';
+import {ActivityIndicator,Alert,BackHandler,Keyboard,KeyboardAvoidingView,Platform,Image,Pressable,ScrollView,Share,StatusBar,StyleSheet,Switch,Text,TextInput,View} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
@@ -7,6 +7,11 @@ import {sessionApi,previewImage,confirmImage,reminderApi} from '../services/api'
 import type {ImagePreview} from '../services/api';
 import type {Calculation,Json,Session,SessionSummary} from '../services/api';
 
+type RoundPhoto={uri:string;mimeType:string;name:string;id:string};
+type PhotoRound={id:string;number:number;photos:RoundPhoto[]};
+type ReviewedPhoto={id:string;roundNumber:number;fileName:string;items:Array<{name:string;amount:string}>;total:string;notes:string};
+const MAX_ROUND_PHOTOS=12;
+const MAX_EVIDENCE_LENGTH=24000;
 type Page='home'|'create'|'imageReview'|'review'|'edit'|'detail';
 type InputMode='ai'|'custom';
 type ReminderTone='friend'|'senior'|'junior';
@@ -298,21 +303,8 @@ export default function HomeScreen(){
  const [splash,setSplash]=useState(true);const [docsById,setDocsById]=useState<Record<string,Session>>({});const [page,setPage]=useState<Page>('home');const [mode,setMode]=useState<InputMode>('ai');const [busy,setBusy]=useState(false);const [message,setMessage]=useState('');const [history,setHistory]=useState<SessionSummary[]>([]);const [meta,setMeta]=useState<MetaMap>({});const [hydrated,setHydrated]=useState(false);
  const [doc,setDoc]=useState<Session|null>(null);const [draft,setDraft]=useState<Json|null>(null);const [dirty,setDirty]=useState(false);const [calculation,setCalculation]=useState<Calculation|null>(null);const [schema,setSchema]=useState<Json|null>(null);
  const [title,setTitle]=useState('');const [aiText,setAiText]=useState('');const [manualPeople,setManualPeople]=useState<string[]>([]);const [personEntry,setPersonEntry]=useState('');const [manualKind,setManualKind]=useState<'equal'|'diff'>('equal');const [diffTransfers,setDiffTransfers]=useState<DiffTransfer[]>([{from:'',to:'',amount:''}]);const [localDiffs,setLocalDiffs]=useState<Record<string,LocalDiff>>({});const [diffHydrated,setDiffHydrated]=useState(false);
- const [selectedImage, setSelectedImage] = useState<{
-  uri: string;
-  mimeType: string;
-  name: string;
-} | null>(null);
-
-const [imagePreview, setImagePreview] =
-  useState<ImagePreview | null>(null);
-
-const [imageItems, setImageItems] =
-  useState<Array<{ name: string; amount: string }>>([]);
-
-const [imageTotal, setImageTotal] = useState('');
-
-const [imageNotes, setImageNotes] = useState('');
+ const [photoRounds,setPhotoRounds]=useState<PhotoRound[]>([{id:'round-1',number:1,photos:[]}]);
+ const [reviewedPhotos,setReviewedPhotos]=useState<ReviewedPhoto[]>([]);
  const [sourceEditing,setSourceEditing]=useState(false);
  const [sourceEvidence,setSourceEvidence]=useState<string|null>(null);
  const [manualPayer,setManualPayer]=useState('');const [manualItem,setManualItem]=useState('식사비');const [manualAmount,setManualAmount]=useState('');const [manualRound,setManualRound]=useState('1');
@@ -329,14 +321,14 @@ const [imageNotes, setImageNotes] = useState('');
  const [createDraftEnabled,setCreateDraftEnabled]=useState(false);
  const busyLock=useRef(false);
  const backActionRef=useRef<()=>boolean>(()=>true);
- const hasCreateContent=Boolean(title.trim()||aiText.trim()||selectedImage||manualPeople.length||personEntry.trim()||manualAmount.trim()||manualPayer.trim()||diffTransfers.some(t=>t.from||t.to||t.amount));
+ const hasCreateContent=Boolean(title.trim()||aiText.trim()||photoRounds.some(r=>r.photos.length)||manualPeople.length||personEntry.trim()||manualAmount.trim()||manualPayer.trim()||diffTransfers.some(t=>t.from||t.to||t.amount));
  const snapshotCreate=()=>({title,aiText,mode,manualPeople,personEntry,manualKind,diffTransfers,manualPayer,manualItem,manualAmount,manualRound});
  const restoreCreate=(s:any)=>{
   setTitle(s.title||'');setAiText(s.aiText||'');setMode(s.mode==='custom'?'custom':'ai');
   setManualPeople(Array.isArray(s.manualPeople)?s.manualPeople:[]);setPersonEntry(s.personEntry||'');
   setManualKind(s.manualKind==='diff'?'diff':'equal');setDiffTransfers(Array.isArray(s.diffTransfers)&&s.diffTransfers.length?s.diffTransfers:[{from:'',to:'',amount:''}]);
   setManualPayer(s.manualPayer||'');setManualItem(s.manualItem||'식사비');setManualAmount(s.manualAmount||'');setManualRound(s.manualRound||'1');
-  setSelectedImage(null);setCreateDraftEnabled(true);setPage('create');
+  setPhotoRounds([{id:'round-1',number:1,photos:[]}]);setReviewedPhotos([]);setCreateDraftEnabled(true);setPage('create');
  };
  const clearCreateDraft=()=>{setSavedCreateDraft(null);AsyncStorage.removeItem(CREATE_DRAFT_STORAGE).catch(()=>{});};
  const clearEditDraft=()=>{setSavedEditDraft(null);AsyncStorage.removeItem(EDIT_DRAFT_STORAGE).catch(()=>{});};
@@ -355,7 +347,7 @@ const [imageNotes, setImageNotes] = useState('');
    else clearCreateDraft();
   },450);
   return()=>clearTimeout(timer);
- },[draftsHydrated,createDraftEnabled,page,title,aiText,mode,manualPeople,personEntry,manualKind,diffTransfers,manualPayer,manualItem,manualAmount,manualRound,selectedImage]);
+ },[draftsHydrated,createDraftEnabled,page,title,aiText,mode,manualPeople,personEntry,manualKind,diffTransfers,manualPayer,manualItem,manualAmount,manualRound,photoRounds]);
  useEffect(()=>{
   if(!draftsHydrated||page!=='edit'||!doc||!draft||!dirty)return;
   const snapshot={sessionId:doc.session_id,inputRevision:doc.revisions[doc.revisions.length-1].input_revision,draft};
@@ -456,7 +448,7 @@ const [imageNotes, setImageNotes] = useState('');
  const run=async(fn:()=>Promise<void>)=>{if(busyLock.current)return;busyLock.current=true;setBusy(true);try{await fn();}catch(e:any){Alert.alert('확인해 주세요',String(e?.message||e));}finally{busyLock.current=false;setBusy(false);}};
  const setLocal=(sid:string,patch:Partial<LocalMeta>)=>setMeta(prev=>({...prev,[sid]:{...prev[sid],...patch}}));
  const startNew=()=>{
-  const fresh=()=>{setDoc(null);setDraft(null);setCalculation(null);setTitle('');setAiText('');setSelectedImage(null);setImagePreview(null);setManualPeople([]);setPersonEntry('');setDiffTransfers([{from:'',to:'',amount:''}]);setManualKind('equal');setMode('ai');setManualPayer('');setManualItem('식사비');setManualAmount('');setManualRound('1');setMessage('');setSourceEditing(false);setSourceEvidence(null);setCreateDraftEnabled(true);setPage('create');};
+  const fresh=()=>{setDoc(null);setDraft(null);setCalculation(null);setTitle('');setAiText('');setPhotoRounds([{id:'round-1',number:1,photos:[]}]);setReviewedPhotos([]);setManualPeople([]);setPersonEntry('');setDiffTransfers([{from:'',to:'',amount:''}]);setManualKind('equal');setMode('ai');setManualPayer('');setManualItem('식사비');setManualAmount('');setManualRound('1');setMessage('');setSourceEditing(false);setSourceEvidence(null);setCreateDraftEnabled(true);setPage('create');};
   AsyncStorage.getItem(CREATE_DRAFT_STORAGE).then(raw=>{
    if(!raw){fresh();return;}
    try{
@@ -475,25 +467,44 @@ const [imageNotes, setImageNotes] = useState('');
    const d=sourceEvidence?await confirmImage(aiText.trim(),sourceEvidence):await sessionApi.ai(aiText.trim());
    setSourceEditing(false);setSourceEvidence(null);await afterCreate(d);return;
   }
-  if(!aiText.trim()&&!selectedImage)throw new Error('정산 상황이나 사진을 입력해 주세요.');
-  if(!selectedImage){await afterCreate(await sessionApi.ai(aiText.trim()));return;}
-  const result=await previewImage(selectedImage,aiText.trim());
-  setImagePreview(result);
-  setImageItems(result.items.map(x=>({name:x.name,amount:x.amount===null?'':String(x.amount)})));
-  setImageTotal(result.total_amount===null?'':String(result.total_amount));
-  setImageNotes(result.notes.join('\n'));
+  const photoList=photoRounds.flatMap(r=>r.photos.map(photo=>({photo,roundNumber:r.number})));
+  if(!aiText.trim()&&!photoList.length)throw new Error('정산 상황이나 사진을 입력해 주세요.');
+  if(!photoList.length){await afterCreate(await sessionApi.ai(aiText.trim()));return;}
+  const previews:ReviewedPhoto[]=[];
+  for(const [index,entry] of photoList.entries()){
+   try{
+    const result=await previewImage(entry.photo,aiText.trim());
+    previews.push({id:entry.photo.id,roundNumber:entry.roundNumber,fileName:entry.photo.name,
+     items:(result.items||[]).map(x=>({name:x.name||'',amount:x.amount===null?'':String(x.amount)})),
+     total:result.total_amount===null?'':String(result.total_amount),notes:(result.notes||[]).join('\n')});
+   }catch(e:any){throw new Error(`${entry.roundNumber}차 ${index+1}/${photoList.length} (${entry.photo.name}) 분석 실패: ${String(e?.message||e)}`);}
+  }
+  setReviewedPhotos(previews);
   setPage('imageReview');
  });
+ const updateReviewedPhoto=(id:string,patch:Partial<ReviewedPhoto>)=>setReviewedPhotos(prev=>prev.map(p=>p.id===id?{...p,...patch}:p));
  const confirmReceipt=()=>run(async()=>{
-  if(!imagePreview)throw new Error('이미지 분석 결과가 없습니다.');
-  const total=safeAmount(imageTotal);
-  if(!imageItems.length)throw new Error('항목을 하나 이상 입력해 주세요.');
-  if(imageItems.some(x=>!x.name.trim()||!x.amount.trim()))throw new Error('항목명과 금액을 모두 확인해 주세요.');
-  const rows=imageItems.map(x=>({name:x.name.trim(),amount:safeAmount(x.amount)}));
-  if(rows.reduce((sum,x)=>sum+x.amount,0)!==total)throw new Error('항목 금액의 합계가 영수증 총액과 일치하지 않습니다.');
-  const evidence=['[사용자가 사진과 대조하여 승인한 영수증 내역]',...rows.map(x=>`${x.name}: ${x.amount}원`),`영수증 총액: ${total}원`,imageNotes.trim()?`추가 확인 사항: ${imageNotes.trim()}`:''].filter(Boolean).join('\n');
+  if(!reviewedPhotos.length)throw new Error('이미지 분석 결과가 없습니다.');
+  const evidenceParts=['[사용자가 사진과 대조하여 승인한 차수별 영수증 내역]','각 영수증은 독립된 결제입니다. 차수별 합계는 참고용이며 별도 결제가 아닙니다. 결제자나 참여자는 명시된 정보가 없다면 추정하지 마세요.'];
+  for(const [index,photo] of reviewedPhotos.entries()){
+   const total=safeAmount(photo.total);
+   if(!photo.items.length)throw new Error(`${photo.roundNumber}차 ${photo.fileName}: 항목을 입력해 주세요.`);
+   if(photo.items.some(x=>!x.name.trim()||!x.amount.trim()))throw new Error(`${photo.roundNumber}차 ${photo.fileName}: 항목명과 금액을 모두 확인해 주세요.`);
+   const items=photo.items.map(x=>({name:x.name.trim(),amount:safeAmount(x.amount)}));
+   if(items.reduce((sum,x)=>sum+x.amount,0)!==total)throw new Error(`${photo.roundNumber}차 ${photo.fileName}: 항목 합계와 총액이 다릅니다.`);
+   evidenceParts.push(`[${photo.roundNumber}차 / 영수증 ${index+1} / ${photo.fileName}]`);
+   evidenceParts.push(...items.map(x=>`- ${x.name}: ${x.amount}원`));
+   evidenceParts.push(`해당 영수증 총액: ${total}원`);
+   if(photo.notes.trim())evidenceParts.push(`추가 확인 사항: ${photo.notes.trim()}`);
+  }
+  // 차수별 합계를 명시해 동일 차수의 여러 영수증을 각각의 결제로 해석할 수 있게 한다.
+  for(const round of [...new Set(reviewedPhotos.map(p=>p.roundNumber))].sort((a,b)=>a-b)){
+   evidenceParts.push(`${round}차 영수증 합계: ${reviewedPhotos.filter(p=>p.roundNumber===round).reduce((sum,p)=>sum+safeAmount(p.total),0)}원`);
+  }
+  const evidence=evidenceParts.join('\n');
+  if(evidence.length>MAX_EVIDENCE_LENGTH)throw new Error('영수증 검수 내용이 너무 깁니다. 메모를 줄이거나 정산을 나누어 주세요.');
   await afterCreate(await confirmImage(aiText.trim(),evidence));
-  setImagePreview(null);
+  setReviewedPhotos([]);
  });
  // 기존 원문과 검수된 영수증 증거를 보존한 채 다시 자연어 분석할 수 있다.
  const returnToOriginal=()=>{
@@ -576,7 +587,27 @@ const [imageNotes, setImageNotes] = useState('');
  const begin=()=>run(async()=>{if(!doc||!rev)return;if(dirty)throw new Error('수정 내용을 먼저 저장해 주세요.');if(issues.length)throw new Error('미해결 확인 항목을 수정해 주세요.');const c=await sessionApi.confirm(doc.session_id,rev.input_revision,'모바일 사용자','정산 시작 버튼으로 조건 확인',{source_reviewed:true,people_resolved:true,conditions_reviewed:true,funding_verified:!!ctx.contributions?.length});const calc=await sessionApi.calculate(doc.session_id,c.confirmation_id);setCalculation(calc);setPage('detail');setMessage('정산이 시작됐어요. 입금 여부는 직접 확인해 주세요.');});
  const deleteSession=()=>{if(doc)deleteById(doc.session_id);};
  const share=()=>run(async()=>{if(!doc||!calculation)return;const latest=localDiffs[doc.session_id]?.session||await sessionApi.get(doc.session_id);if(latest.revisions[latest.revisions.length-1].input_revision!==calculation.input_revision)throw new Error('정산 조건이 변경됐어요. 다시 계산해 주세요.');await Share.share({message:[`[${meta[doc.session_id]?.title||'모아정산'}] 송금 안내`,...groupedTransfers(calculation.result.settlements).map(t=>`${t.from_participant} → ${t.to_participant}: ${money(t.amount)}`)].join('\n')});});
- const chooseImage=()=>run(async()=>{const perm=await ImagePicker.requestMediaLibraryPermissionsAsync();if(!perm.granted)throw new Error('사진 접근 권한이 필요해요.');const picked=await ImagePicker.launchImageLibraryAsync({mediaTypes:['images'],quality:.8});if(picked.canceled)return;const image=picked.assets[0];setSelectedImage({uri:image.uri,mimeType:image.mimeType||'image/jpeg',name:image.fileName||'receipt.jpg'});setImagePreview(null);});
+ const addPhotoRound=()=>{
+  if(photoRounds.length>=12){Alert.alert('차수 제한','최대 12차까지 추가할 수 있습니다.');return;}
+  const next=Math.max(0,...photoRounds.map(r=>r.number))+1;
+  setPhotoRounds(prev=>[...prev,{id:`round-${Date.now()}-${next}`,number:next,photos:[]}]);
+  setReviewedPhotos([]);
+ };
+ const removePhotoRound=(id:string)=>{
+  setPhotoRounds(prev=>prev.filter(r=>r.id!==id));
+  setReviewedPhotos([]);
+ };
+ const chooseImage=(roundId:string)=>run(async()=>{
+  const count=photoRounds.reduce((n,r)=>n+r.photos.length,0);
+  if(count>=MAX_ROUND_PHOTOS)throw new Error(`사진은 최대 ${MAX_ROUND_PHOTOS}장까지 첨부할 수 있어요.`);
+  const perm=await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if(!perm.granted)throw new Error('사진 접근 권한이 필요해요.');
+  const picked=await ImagePicker.launchImageLibraryAsync({mediaTypes:['images'],allowsMultipleSelection:true,selectionLimit:MAX_ROUND_PHOTOS-count,quality:.8});
+  if(picked.canceled)return;
+  const incoming=picked.assets.map((asset,i)=>({uri:asset.uri,mimeType:asset.mimeType||'image/jpeg',name:asset.fileName||`receipt-${Date.now()}-${i+1}.jpg`,id:`photo-${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`}));
+  setPhotoRounds(prev=>prev.map(r=>r.id===roundId?{...r,photos:[...r.photos,...incoming]}:r));
+  setReviewedPhotos([]);
+ });
  const addPerson=()=>{const name=personEntry.trim();if(!name)return;if(manualPeople.includes(name)){Alert.alert('중복된 참여자','이미 추가된 이름이에요.');return;}setManualPeople(p=>[...p,name]);setPersonEntry('');};
  const diffTotal=diffTransfers.reduce((sum,t)=>sum+(Number(t.amount.replace(/,/g,''))||0),0);
  const diffValid=manualAmount.trim()!==''&&/^\d+$/.test(manualAmount.replace(/,/g,''))&&Number(manualAmount.replace(/,/g,''))===diffTotal&&diffTransfers.length>0&&diffTransfers.every(t=>t.from&&t.to&&t.from!==t.to&&manualPeople.includes(t.from)&&manualPeople.includes(t.to)&&/^\d+$/.test(t.amount.replace(/,/g,''))&&Number(t.amount.replace(/,/g,''))>0);
@@ -739,10 +770,10 @@ const [imageNotes, setImageNotes] = useState('');
    <Pressable onPress={()=>open(s.session_id)}><Text style={styles.link}>자세히 보기 ›</Text></Pressable>
   </View>;
  })}<Pressable style={[styles.boardTile,styles.addTile]} onPress={startNew}><Text style={styles.addIcon}>＋</Text><Text style={styles.addTitle}>정산 추가</Text></Pressable></View><Text style={styles.helper}>정산은 사용자가 직접 목록에서 삭제할 때까지 남아요. 입금 확인은 이 기기에 저장돼요.</Text></>}
- {page==='create'&&<><Back/><Text style={styles.eyebrow}>NEW SETTLEMENT</Text><Text style={styles.heroTitle}>새 정산 만들기</Text><Text style={styles.muted}>AI에 상황과 사진을 함께 전달하거나 직접 입력하세요.</Text><Panel title="정산 이름"><Field label="이름 (선택)" value={title} onChange={setTitle} placeholder="예: 동아리 회식"/></Panel><Panel title="입력 방식"><View style={styles.wrap}><Chip text="✦ AI 조건 입력" active={mode==='ai'} onPress={()=>setMode('ai')}/><Chip text="사용자 지정" active={mode==='custom'} onPress={()=>setMode('custom')}/></View></Panel>{mode==='ai'?<Panel title="AI 정산 분석"><Text style={styles.muted}>텍스트와 영수증·메모 사진을 함께 분석할 수 있어요. 사진을 첨부하면 AI 분석 후 영수증 항목과 금액을 먼저 검수합니다.</Text><Field label="정산 상황 (사진만 있어도 가능)" value={aiText} onChange={setAiText} multiline placeholder="민수가 식사비 6만원을 냈고 도윤은 술을 안 마셨어..."/><Button text={selectedImage?`✓ 사진 첨부됨 · 다른 사진 선택`:'＋ 영수증 / 메모 사진 첨부'} secondary onPress={chooseImage} disabled={busy}/>{selectedImage?<Text style={styles.success}>첨부 사진: {selectedImage.name}</Text>:null}{sourceEditing&&<Text style={styles.success}>이전에 검수한 영수증 내역은 보존됩니다. 문장만 수정하여 다시 분석하세요.</Text>}<Button text={busy?'분석 중...':sourceEditing?'수정한 문장으로 다시 분석하기 →':'AI로 조건 분석하기 →'} onPress={createAI} disabled={busy}/></Panel>:<><Panel title="정산 방식"><View style={styles.wrap}><Chip text="N분의 1 정산" active={manualKind==='equal'} onPress={()=>setManualKind('equal')}/><Chip text="차액 정산" active={manualKind==='diff'} onPress={()=>setManualKind('diff')}/></View></Panel><Panel title="정산 참여자"><View style={{flexDirection:'row',gap:8,alignItems:'center'}}><TextInput style={[styles.input,{flex:1}]} value={personEntry} onChangeText={setPersonEntry} placeholder="이름 입력" onSubmitEditing={addPerson}/><Pressable onPress={addPerson} style={[styles.btn,{marginTop:0,minWidth:48}]}><Text style={styles.btnText}>＋</Text></Pressable></View><View style={styles.wrap}>{manualPeople.map(p=><Pressable key={p} style={styles.addPill} onPress={()=>setManualPeople(v=>v.filter(x=>x!==p))}><Text style={styles.addPillText}>{p}  ×</Text></Pressable>)}</View></Panel><Panel title={manualKind==='equal'?'균등 정산 조건':'차액 정산 조건'}><Field label={manualKind==='diff'?'송금 총액 (원)':'총 지출액 (원)'} value={manualAmount} onChange={setManualAmount} numeric placeholder="90000"/><Field label="차수" value={manualRound} onChange={setManualRound} numeric/>{manualKind==='equal'?<><Field label="결제자" value={manualPayer} onChange={setManualPayer} placeholder="민수"/><Field label="항목" value={manualItem} onChange={setManualItem}/><Button text="기본 정산 조건 만들기 →" onPress={createCustom} disabled={busy}/><Text style={styles.helper}>차수별 참여, 비주류 제외, 찬조금은 다음 정산 조건 수정 화면에서 추가할 수 있어요.</Text><Button text="빈 양식으로 상세 입력" secondary onPress={createBlank} disabled={busy}/></>:<><Text style={styles.muted}>총액은 송금할 금액의 합계를 뜻해요. 누가 누구에게 얼마를 보내는지 입력하세요.</Text>{diffTransfers.map((t,i)=><View key={i} style={styles.arrayRow}><View style={styles.rowBetween}><Text style={styles.subhead}>송금 {i+1}</Text><Pressable onPress={()=>setDiffTransfers(v=>v.filter((_,j)=>j!==i))}><Text style={styles.deleteText}>삭제</Text></Pressable></View><Text style={styles.label}>보내는 사람</Text><View style={styles.wrap}>{manualPeople.map(p=><Chip key={'from'+p} text={p} active={t.from===p} onPress={()=>setDiffTransfers(v=>v.map((x,j)=>j===i?{...x,from:p}:x))}/>)}</View><Text style={styles.label}>받는 사람</Text><View style={styles.wrap}>{manualPeople.map(p=><Chip key={'to'+p} text={p} active={t.to===p} onPress={()=>setDiffTransfers(v=>v.map((x,j)=>j===i?{...x,to:p}:x))}/>)}</View><Field label="송금액 (원)" numeric value={t.amount} onChange={v=>setDiffTransfers(a=>a.map((x,j)=>j===i?{...x,amount:v}:x))}/></View>)}<Button text="＋ 송금 내역 추가" secondary onPress={()=>setDiffTransfers(v=>[...v,{from:'',to:'',amount:''}])}/><Text style={{fontWeight:'800',color:diffValid?'#2563EB':'#DC2626'}}>{diffValid?'금액이 일치해요!':'총액과 정산 금액이 불일치해요!'}</Text><Text style={styles.muted}>송금액 합계: {money(diffTotal)}</Text><Button text="정산 시작 · 금액 계산 →" disabled={!diffValid} onPress={createDiff}/></>}</Panel></>}</>}
+ {page==='create'&&<><Back/><Text style={styles.eyebrow}>NEW SETTLEMENT</Text><Text style={styles.heroTitle}>새 정산 만들기</Text><Text style={styles.muted}>AI에 상황과 사진을 함께 전달하거나 직접 입력하세요.</Text><Panel title="정산 이름"><Field label="이름 (선택)" value={title} onChange={setTitle} placeholder="예: 동아리 회식"/></Panel><Panel title="입력 방식"><View style={styles.wrap}><Chip text="✦ AI 조건 입력" active={mode==='ai'} onPress={()=>setMode('ai')}/><Chip text="사용자 지정" active={mode==='custom'} onPress={()=>setMode('custom')}/></View></Panel>{mode==='ai'?<Panel title="AI 정산 분석"><Text style={styles.muted}>텍스트와 영수증·메모 사진을 함께 분석할 수 있어요. 사진을 첨부하면 AI 분석 후 영수증 항목과 금액을 먼저 검수합니다.</Text><Field label="정산 상황 (사진만 있어도 가능)" value={aiText} onChange={setAiText} multiline placeholder="민수가 식사비 6만원을 냈고 도윤은 술을 안 마셨어..."/><Text style={styles.subhead}>차수별 영수증 사진</Text><Text style={styles.helper}>차수를 추가한 다음 각 차수에 사진을 여러 장 첨부하세요. 각 사진은 개별 결제 내역으로 검수합니다. (전체 최대 12장)</Text>{photoRounds.map((r,i)=><View key={r.id} style={styles.arrayRow}><View style={styles.rowBetween}><Text style={styles.subhead}>{r.number}차 · 사진 {r.photos.length}장</Text>{photoRounds.length>1?<Pressable disabled={busy} onPress={()=>removePhotoRound(r.id)}><Text style={styles.deleteText}>차수 삭제</Text></Pressable>:null}</View>{r.photos.map(photo=><View key={photo.id} style={styles.infoRow}><Text style={styles.infoLabel} numberOfLines={2}>{photo.name}</Text><Pressable disabled={busy} onPress={()=>{setPhotoRounds(prev=>prev.map(round=>round.id===r.id?{...round,photos:round.photos.filter(p=>p.id!==photo.id)}:round));setReviewedPhotos([]);}}><Text style={styles.deleteText}>삭제</Text></Pressable></View>)}<Button text={`＋ ${r.number}차 사진 추가`} secondary small disabled={busy} onPress={()=>chooseImage(r.id)}/></View>)}<Button text="＋ 차수 추가" secondary disabled={busy} onPress={addPhotoRound}/>{sourceEditing&&<Text style={styles.success}>이전에 검수한 영수증 내역은 보존됩니다. 문장만 수정하여 다시 분석하세요.</Text>}<Button text={busy?'분석 중...':sourceEditing?'수정한 문장으로 다시 분석하기 →':'AI로 조건 분석하기 →'} onPress={createAI} disabled={busy}/></Panel>:<><Panel title="정산 방식"><View style={styles.wrap}><Chip text="N분의 1 정산" active={manualKind==='equal'} onPress={()=>setManualKind('equal')}/><Chip text="차액 정산" active={manualKind==='diff'} onPress={()=>setManualKind('diff')}/></View></Panel><Panel title="정산 참여자"><View style={{flexDirection:'row',gap:8,alignItems:'center'}}><TextInput style={[styles.input,{flex:1}]} value={personEntry} onChangeText={setPersonEntry} placeholder="이름 입력" onSubmitEditing={addPerson}/><Pressable onPress={addPerson} style={[styles.btn,{marginTop:0,minWidth:48}]}><Text style={styles.btnText}>＋</Text></Pressable></View><View style={styles.wrap}>{manualPeople.map(p=><Pressable key={p} style={styles.addPill} onPress={()=>setManualPeople(v=>v.filter(x=>x!==p))}><Text style={styles.addPillText}>{p}  ×</Text></Pressable>)}</View></Panel><Panel title={manualKind==='equal'?'균등 정산 조건':'차액 정산 조건'}><Field label={manualKind==='diff'?'송금 총액 (원)':'총 지출액 (원)'} value={manualAmount} onChange={setManualAmount} numeric placeholder="90000"/><Field label="차수" value={manualRound} onChange={setManualRound} numeric/>{manualKind==='equal'?<><Field label="결제자" value={manualPayer} onChange={setManualPayer} placeholder="민수"/><Field label="항목" value={manualItem} onChange={setManualItem}/><Button text="기본 정산 조건 만들기 →" onPress={createCustom} disabled={busy}/><Text style={styles.helper}>차수별 참여, 비주류 제외, 찬조금은 다음 정산 조건 수정 화면에서 추가할 수 있어요.</Text><Button text="빈 양식으로 상세 입력" secondary onPress={createBlank} disabled={busy}/></>:<><Text style={styles.muted}>총액은 송금할 금액의 합계를 뜻해요. 누가 누구에게 얼마를 보내는지 입력하세요.</Text>{diffTransfers.map((t,i)=><View key={i} style={styles.arrayRow}><View style={styles.rowBetween}><Text style={styles.subhead}>송금 {i+1}</Text><Pressable onPress={()=>setDiffTransfers(v=>v.filter((_,j)=>j!==i))}><Text style={styles.deleteText}>삭제</Text></Pressable></View><Text style={styles.label}>보내는 사람</Text><View style={styles.wrap}>{manualPeople.map(p=><Chip key={'from'+p} text={p} active={t.from===p} onPress={()=>setDiffTransfers(v=>v.map((x,j)=>j===i?{...x,from:p}:x))}/>)}</View><Text style={styles.label}>받는 사람</Text><View style={styles.wrap}>{manualPeople.map(p=><Chip key={'to'+p} text={p} active={t.to===p} onPress={()=>setDiffTransfers(v=>v.map((x,j)=>j===i?{...x,to:p}:x))}/>)}</View><Field label="송금액 (원)" numeric value={t.amount} onChange={v=>setDiffTransfers(a=>a.map((x,j)=>j===i?{...x,amount:v}:x))}/></View>)}<Button text="＋ 송금 내역 추가" secondary onPress={()=>setDiffTransfers(v=>[...v,{from:'',to:'',amount:''}])}/><Text style={{fontWeight:'800',color:diffValid?'#2563EB':'#DC2626'}}>{diffValid?'금액이 일치해요!':'총액과 정산 금액이 불일치해요!'}</Text><Text style={styles.muted}>송금액 합계: {money(diffTotal)}</Text><Button text="정산 시작 · 금액 계산 →" disabled={!diffValid} onPress={createDiff}/></>}</Panel></>}</>}
 
 
- {page==='imageReview'&&imagePreview&&<><Back label="사진 입력으로 돌아가기"/><Text style={styles.heroTitle}>영수증 분석 결과 확인</Text><Text style={styles.muted}>사진 원본과 비교하여 품목과 금액을 수정하세요. 승인 전에는 정산 세션을 만들지 않습니다.</Text><Panel title="인식된 품목">{imageItems.map((item,i)=><View key={i} style={styles.arrayRow}><Field label={`항목 ${i+1}`} value={item.name} onChange={v=>setImageItems(a=>a.map((x,j)=>j===i?{...x,name:v}:x))}/><Field label="항목 전체 금액 (원)" numeric value={item.amount} onChange={v=>setImageItems(a=>a.map((x,j)=>j===i?{...x,amount:v}:x))}/><Button text="항목 삭제" secondary small onPress={()=>setImageItems(a=>a.filter((_,j)=>i!==j))}/></View>)}<Button text="＋ 항목 추가" secondary onPress={()=>setImageItems(a=>[...a,{name:'',amount:''}])}/><Field label="영수증 총액 (원)" numeric value={imageTotal} onChange={setImageTotal}/><Text style={styles.muted}>항목 합계: {money(imageItems.reduce((sum,x)=>sum+(Number(x.amount.replace(/,/g,''))||0),0))}</Text><Field label="불명확한 부분 / 추가 확인 사항" multiline value={imageNotes} onChange={setImageNotes}/><Button text={busy?'확인 중...':'영수증 확인 완료 · 정산 조건 검토 →'} disabled={busy} onPress={confirmReceipt}/><Text style={styles.helper}>영수증을 확인한 후에도 기존 정산 조건 검토 화면에서 인원·분담·예외를 확인해야 합니다.</Text></Panel></>}
+ {page==='imageReview'&&reviewedPhotos.length>0&&<><Back label="사진 입력으로 돌아가기"/><Text style={styles.heroTitle}>차수별 영수증 분석 결과 확인</Text><Text style={styles.muted}>사진마다 품목과 금액을 직접 확인하세요. 모든 사진을 승인한 다음에만 정산 조건을 생성합니다.</Text>{reviewedPhotos.map((photo,i)=><Panel key={photo.id} title={`${photo.roundNumber}차 · 영수증 ${i+1} (${photo.fileName})`}>{photoRounds.flatMap(r=>r.photos).find(p=>p.id===photo.id)?.uri?<Image source={{uri:photoRounds.flatMap(r=>r.photos).find(p=>p.id===photo.id)!.uri}} resizeMode="contain" style={{width:"100%",height:220,backgroundColor:C.bg,borderRadius:12}}/>:null}{photo.items.map((item,j)=><View key={j} style={styles.arrayRow}><Field label={`항목 ${j+1}`} value={item.name} onChange={v=>updateReviewedPhoto(photo.id,{items:photo.items.map((x,k)=>k===j?{...x,name:v}:x)})}/><Field label="항목 전체 금액 (원)" numeric value={item.amount} onChange={v=>updateReviewedPhoto(photo.id,{items:photo.items.map((x,k)=>k===j?{...x,amount:v}:x)})}/><Button text="항목 삭제" secondary small onPress={()=>updateReviewedPhoto(photo.id,{items:photo.items.filter((_,k)=>j!==k)})}/></View>)}<Button text="＋ 항목 추가" secondary onPress={()=>updateReviewedPhoto(photo.id,{items:[...photo.items,{name:'',amount:''}]})}/><Field label="해당 영수증 총액 (원)" numeric value={photo.total} onChange={v=>updateReviewedPhoto(photo.id,{total:v})}/><Text style={styles.muted}>품목 합계: {money(photo.items.reduce((sum,x)=>sum+(Number(x.amount.replace(/,/g,''))||0),0))}</Text><Field label="불명확한 부분 / 추가 확인 사항" multiline value={photo.notes} onChange={v=>updateReviewedPhoto(photo.id,{notes:v})}/></Panel>)}<Button text={busy?'확인 중...':'모든 영수증 확인 완료 · 정산 조건 검토 →'} disabled={busy} onPress={confirmReceipt}/><Text style={styles.helper}>차수별 영수증 합계와 인원·분담·예외는 다음 조건 검토 화면에서 다시 확인하세요.</Text></>}
  {page==='review'&&doc&&<><Back/><Text style={styles.eyebrow}>REVIEW BEFORE SETTLEMENT</Text><Text style={styles.heroTitle}>조건을 확인해 주세요</Text><Text style={styles.muted}>AI가 추출했더라도 금액·인원·예외는 직접 확인해야 해요.</Text><Button text="← 처음 입력한 문장 수정하기" secondary onPress={returnToOriginal}/><Panel title="정산 조건 요약"><Summary context={ctx}/><Text style={styles.muted}>입력 버전 {rev?.input_revision}</Text><Button text="✎ 정산 조건 수정" onPress={()=>setPage('edit')}/></Panel><Panel title="원문 및 확인이 필요한 부분"><Text style={styles.sourceText}>{doc.source_text}</Text>{doc.supplied_evidence?<Text style={styles.sourceText}>{doc.supplied_evidence}</Text>:null}{visibleIssues.length?visibleIssues.map((x,i)=><IssueResolver key={`${String(x.path||'')}:${String(x.code||'')}:${i}`} issue={x} index={i}/>):<Text style={styles.success}>자동 검토에서 미해결 항목을 찾지 못했어요. 실제 조건은 직접 확인하세요.</Text>}</Panel><View style={{marginTop:18}}><Button text={busy?'계산 중...':'정산 시작 · 금액 계산 →'} disabled={busy||!!issues.length} onPress={begin}/><Text style={styles.helper}>버튼을 누르면 표시된 정산 조건을 확인한 것으로 기록하고 계산합니다. 실제 송금은 자동으로 수행하지 않아요.</Text></View></>}
  {page==='edit'&&doc&&draft&&<><Back label="검수 화면으로"/><Text style={styles.eyebrow}>CUSTOM EDITOR</Text><Text style={styles.heroTitle}>정산 조건 수정</Text><Text style={styles.muted}>참여자, 차수, 항목, 분담 기준, 예외, 찬조금을 직접 수정할 수 있어요.</Text><Panel title="정산 조건 편집"><ConditionEditor value={draft} focus={editorFocus} onChange={v=>{setDraft(v);setDirty(true);}}/><FriendlyEditor value={draft} onChange={v=>{setDraft(v);setDirty(true);}}/><Button text={showAdvanced?'고급 조건 편집 닫기':'스키마 고급 편집 (선택 사항)'} secondary onPress={()=>setShowAdvanced(v=>!v)}/>{showAdvanced&&(schema?<SchemaEditor schema={schema} value={draft} onChange={v=>{setDraft(v);setDirty(true);}}/>:<Text style={styles.issue}>서버의 /api/schema를 불러오지 못했어요. 네트워크를 확인해 주세요.</Text>)}<Text style={styles.helper}>결제 번호와 항목 번호는 0부터 시작합니다. 항목을 삭제했다면 참조 번호도 다시 확인하세요.</Text><Button text={busy?'저장 중...':'수정 내용 저장 · 다시 검수 →'} disabled={busy||!dirty} onPress={saveEdit}/></Panel></>}
  {page==='detail'&&doc&&<><Back label="홈으로"/><Text style={styles.eyebrow}>ACTIVE SETTLEMENT</Text><Text style={styles.heroTitle}>{meta[doc.session_id]?.title||'진행 중인 정산'}</Text><Text style={styles.muted}>입금 상태를 직접 대조하고 토글로 기록하세요.</Text><Panel title="정산 개요"><Summary context={ctx}/><Text style={styles.cardAmount}>{money(localDiffs[doc.session_id]?ctx.transfer_total:total(doc))}</Text>{!localDiffs[doc.session_id]&&<Button text="조건 다시 검토·수정" secondary onPress={()=>setPage('review')}/>}</Panel>{calculation&&calculation.input_revision===rev?.input_revision?<><Panel title="송금 및 입금 관리"><PaymentList d={doc} calc={calculation}/><Button text="전체 송금 안내 공유" secondary onPress={share}/></Panel></>:<Panel title="정산 진행 전"><Text style={styles.muted}>아직 계산이 완료되지 않았어요.</Text><Button text="검수하고 계산하기" onPress={()=>setPage('review')}/></Panel>}<Panel title="정산 관리"><Field label="정산명" value={meta[doc.session_id]?.title||''} onChange={v=>setLocal(doc.session_id,{title:v})} placeholder="정산명 입력"/><Button text="정산 삭제" secondary danger onPress={deleteSession}/></Panel></>}
