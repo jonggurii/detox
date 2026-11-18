@@ -18,10 +18,6 @@ from .gemini_client import get_model
 
 
 LOG = logging.getLogger(__name__)
-<<<<<<< HEAD
-PROMPT_PATH = Path(__file__).with_name("prompts") / "reminder_message.md"
-TONES = {"friend": "친근한 친구 사이", "senior": "존댓말로 정중하게", "junior": "친근하고 부담스럽지 않게"}
-=======
 
 PROMPT_PATH = (
     Path(__file__).with_name("prompts") / "reminder_message.md"
@@ -33,7 +29,6 @@ TONES = {
     "junior": "친근하고 부담스럽지 않게",
 }
 
->>>>>>> e388c64beb66363b3c29b8ec350da46b08eaa61c
 STYLE_OPTIONS = {
     "friend": {
         "warm": "다정하게: 따뜻하고 편안한 반말로, 상대에게 부담을 주지 않고 요청",
@@ -187,11 +182,6 @@ def compose_message(
     )
 
 
-<<<<<<< HEAD
-def generate_reminder(*, title: str, from_name: str, to_name: str, amount: int,
-                      tone: str, repeat: bool, client=None, style: str | None = None) -> dict:
-    if tone not in TONES or type(amount) is not int or amount <= 0 or amount > 10**12:
-=======
 def generate_reminder(
     *,
     title: str,
@@ -212,11 +202,8 @@ def generate_reminder(
         or amount <= 0
         or amount > 10**12
     ):
->>>>>>> e388c64beb66363b3c29b8ec350da46b08eaa61c
         raise ValueError("안내 조건이 올바르지 않습니다")
 
-<<<<<<< HEAD
-=======
     if (
         not from_name.strip()
         or not to_name.strip()
@@ -226,21 +213,11 @@ def generate_reminder(
             "송금자와 수취인을 확인해 주세요"
         )
 
->>>>>>> e388c64beb66363b3c29b8ec350da46b08eaa61c
     # Preserve clients that only send relationship, without a sub-style.
     style = style or DEFAULT_STYLE[tone]
     if style not in STYLE_OPTIONS[tone]:
         raise ValueError("선택한 관계와 세부 말투가 일치하지 않습니다")
 
-<<<<<<< HEAD
-    source, body = "template", _fallback_body(tone, repeat, style)
-    try:
-        # 신뢰할 수 없는 사용자 입력은 프롬프트에 넣지 않는다.
-        base_prompt = PROMPT_PATH.read_text(encoding="utf-8")
-        prompt = f"{base_prompt}\n관계: {TONES[tone]}\n안내 유형: {'재안내' if repeat else '첫 안내'}"
-        prompt += f"\n세부 말투: {STYLE_OPTIONS[tone][style]}"
-        model_response = (client or _client()).models.generate_content(
-=======
     # 2. Gemini 오류 시 사용할 기본 문구
     source = "template"
     body = _fallback_body(tone, repeat, style)
@@ -265,7 +242,6 @@ def generate_reminder(
         model_response = (
             client or _client()
         ).models.generate_content(
->>>>>>> e388c64beb66363b3c29b8ec350da46b08eaa61c
             model=get_model(),
             contents=prompt,
             
