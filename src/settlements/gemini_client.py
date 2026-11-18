@@ -3,7 +3,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
 
 
 def get_model() -> str:
