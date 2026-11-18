@@ -1,4 +1,5 @@
 import { File } from 'expo-file-system';
+import { Platform } from 'react-native';
 
 export type Json = Record<string, any>;
 export type Issue = {code: string; path: string; question: string};
@@ -8,7 +9,21 @@ export type Calculation = {calculation_id?:string;input_revision:number; result:
 export type Session = {session_id:string; source_text:string; supplied_evidence?:string|null; revisions:Revision[]; calculations:Calculation[]};
 export type SessionSummary = {session_id:string; title?:string; created_at?:string; input_revision?:number};
 export type Receipt = {receipt_id:string; review_revision:number; warning?:string|null; ocr?:{text?:string};fields?:{items?:Array<{name?:string|null;amount?:number|null}>;total_amount?:number|null;warnings?:string[]};review?:Json|null};
-const BASE = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/$/, '');
+const WEB_ORIGIN =
+  Platform.OS === 'web' && typeof window !== 'undefined'
+    ? window.location.origin
+    : '';
+
+const IS_LOCAL_WEB =
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(WEB_ORIGIN);
+
+// Render에 배포된 웹은 같은 서버를 API로 사용한다.
+// 로컬 Expo 웹과 Android는 EXPO_PUBLIC_API_URL을 사용한다.
+const BASE = (
+  WEB_ORIGIN && !IS_LOCAL_WEB
+    ? WEB_ORIGIN
+    : process.env.EXPO_PUBLIC_API_URL || WEB_ORIGIN
+).replace(/\/$/, '');
 export const apiBase = () => BASE;
 export async function request<T>(path:string, method='GET', body?:unknown):Promise<T>{
   if(!BASE) throw new Error('mobile/.env에 EXPO_PUBLIC_API_URL=http://PC_IP:8000을 설정하세요.');

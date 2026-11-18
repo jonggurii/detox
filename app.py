@@ -6,11 +6,14 @@ import json
 import os
 import sqlite3
 import logging
+import time
+from threading import Lock
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from typing import Literal
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from settlements.parser import (
@@ -21,6 +24,7 @@ from settlements.parser import (
 from settlements.workflow_store import WorkflowError, WorkflowStore
 from settlements.calculator import CalculationError
 from settlements.receipt_api import receipt_router
+from settlements.reminder_writer import generate_reminder
 
 from backend.multimodal_router import make_multimodal_router
 
@@ -67,6 +71,18 @@ class CalculateBody(Body):
     confirmation_id: str = Field(min_length=1, max_length=100)
 
 
+class ReminderBody(Body):
+    session_id: str = Field(min_length=1, max_length=100)
+    calculation_id: str | None = Field(default=None, max_length=100)
+    from_participant: str = Field(min_length=1, max_length=100)
+    to_participant: str = Field(min_length=1, max_length=100)
+    title: str = Field(default="모아정산", max_length=80)
+    tone: Literal["friend", "senior", "junior"] = "friend"
+    repeat: StrictBool = False
+    # 직접 차액 정산의 경우에만 입력한다. 서버에는 저장되지 않는다.
+    local_amount: int | None = Field(default=None, gt=0, le=10**12, strict=True)
+
+
 def create_app(db_path=None, parser=None, ocr=None):
     app = FastAPI(title="모아정산", version="0.1.0")
     allowed_hosts = [
@@ -98,6 +114,11 @@ def create_app(db_path=None, parser=None, ocr=None):
 
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
     parse = parser or parse_and_review
+
+    # 공개 MVP의 Gemini 비용 남용을 완화하는 프로세스 단위 간단한 제한(1분당 12회/IP).
+    # 다중 인스턴스/프록시 환경에서는 별도 인증·공유 rate limiter 필요.
+    reminder_limits = {}
+    reminder_limits_lock = Lock()
 
     @app.middleware("http")
     async def same_origin(request: Request, call_next):
@@ -268,6 +289,51 @@ def create_app(db_path=None, parser=None, ocr=None):
     def calculate_session(sid: str, body: CalculateBody):
         require_session(sid)
         return store.calculate(sid, body.confirmation_id)
+
+    @app.post("/api/reminders/generate")
+    def reminder_generate(body: ReminderBody, request: Request):
+        ip = request.client.host if request.client else "unknown"
+        now_mono = time.monotonic()
+        with reminder_limits_lock:
+            # 호출 빈도 제한은 모델 호출 이전에 적용한다.
+            recent = [t for t in reminder_limits.get(ip, []) if now_mono - t < 60]
+            if len(recent) >= 12:
+                raise HTTPException(429, "AI 문구 생성 요청이 많습니다. 잠시 후 다시 시도해 주세요.")
+            recent.append(now_mono)
+            reminder_limits[ip] = recent
+        if body.from_participant == body.to_participant:
+            raise HTTPException(422, "자기 자신에게 송금 안내를 만들 수 없습니다.")
+        if body.session_id.startswith("local-diff-"):
+            # 클라이언트 수동 차액 정산: 로컬에서 확정한 송금액만 사용하고 서버에는 저장하지 않는다.
+            if body.calculation_id is not None or body.local_amount is None:
+                raise HTTPException(422, "직접 차액 정산 송금액이 필요합니다.")
+            amount = body.local_amount
+            amount_source = "local_manual"
+        else:
+            # 서버 세션은 DB의 *최신 승인 계산*에서만 송금액을 얻는다.
+            if body.local_amount is not None or not body.calculation_id:
+                raise HTTPException(422, "서버에서 확인된 계산 ID가 필요합니다.")
+            try:
+                doc = store.view(body.session_id)
+            except WorkflowError as exc:
+                raise HTTPException(404, "정산을 찾지 못했습니다.") from exc
+            rev = doc["revisions"][-1]
+            if rev["context"].get("reminder_handling") == "external_service_only":
+                raise HTTPException(409, "기존 외부 서비스 알림만 사용하도록 선택한 정산입니다.")
+            calc = next((c for c in doc["calculations"]
+                         if c["calculation_id"] == body.calculation_id), None)
+            if calc is None or calc["input_revision"] != rev["input_revision"]:
+                raise HTTPException(409, "확정된 최신 계산 결과가 필요합니다.")
+            amount = sum(x["amount"] for x in calc["result"]["settlements"]
+                         if x["from_participant"] == body.from_participant
+                         and x["to_participant"] == body.to_participant)
+            if amount <= 0:
+                raise HTTPException(422, "해당 송금 관계는 계산 결과에 없습니다.")
+            amount_source = "confirmed_calculation"
+        result = generate_reminder(title=body.title, from_name=body.from_participant,
+                                   to_name=body.to_participant, amount=amount,
+                                   tone=body.tone, repeat=body.repeat)
+        return {**result, "amount_source": amount_source}
 
     # 영수증 업로드 → Gemini 추출 후보 → 사람 검수 → 기존 정산 워크플로
     app.include_router(receipt_router(store, parse, ROOT, ocr=ocr))
