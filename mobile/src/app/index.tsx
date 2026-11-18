@@ -1,11 +1,73 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
-import {ActivityIndicator,Alert,BackHandler,Keyboard,KeyboardAvoidingView,Platform,Pressable,ScrollView,Share,StatusBar,StyleSheet,Switch,Text,TextInput,View} from 'react-native';
+import {ActivityIndicator,Alert as NativeAlert,BackHandler,Keyboard,KeyboardAvoidingView,Platform,Pressable,ScrollView,Share,StatusBar,StyleSheet,Switch,Text,TextInput,View} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import {sessionApi,previewImage,confirmImage,reminderApi} from '../services/api';
 import type {ImagePreview} from '../services/api';
 import type {Calculation,Json,Session,SessionSummary} from '../services/api';
+
+
+// Expo Web에서는 React Native Alert.alert가 동작하지 않으므로
+// 브라우저 확인창으로 대체한다.
+// Android/iOS에서는 기존 네이티브 Alert를 그대로 사용한다.
+type MoaAlertButton = {
+  text?: string;
+  style?: string;
+  onPress?: () => void;
+};
+
+const Alert = {
+  alert(
+    title: string,
+    message?: string,
+    buttons?: MoaAlertButton[],
+  ) {
+    if (Platform.OS !== 'web') {
+      NativeAlert.alert(title, message, buttons as any);
+      return;
+    }
+
+    if (typeof window === 'undefined') return;
+
+    const content = [title, message || '']
+      .filter(Boolean)
+      .join('\n\n');
+
+    if (!buttons || buttons.length === 0) {
+      window.alert(content);
+      return;
+    }
+
+    const cancelButton = buttons.find(
+      button => button.style === 'cancel'
+    );
+
+    const actionButtons = buttons.filter(
+      button => button.style !== 'cancel'
+    );
+
+    if (actionButtons.length === 0) {
+      window.alert(content);
+      return;
+    }
+
+    const yesButton = actionButtons[actionButtons.length - 1];
+    const noButton =
+      cancelButton ||
+      (actionButtons.length > 1 ? actionButtons[0] : undefined);
+
+    const explanation =
+      '\n\n확인: ' + (yesButton.text || '진행') +
+      '\n취소: ' + (noButton?.text || '취소');
+
+    if (window.confirm(content + explanation)) {
+      yesButton.onPress?.();
+    } else {
+      noButton?.onPress?.();
+    }
+  },
+};
 
 type Page='home'|'create'|'imageReview'|'review'|'edit'|'detail';
 type InputMode='ai'|'custom';
