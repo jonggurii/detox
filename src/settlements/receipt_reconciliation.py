@@ -77,11 +77,22 @@ def reconcile_reviewed_receipts(data, evidence, user_text):
     rounds = {r.get('round_number'): r for r in (result.get('rounds') or []) if isinstance(r, dict)}
     # Only a single verified receipt and a single compatible expense permit
     # implicit round binding. Never override a conflicting explicit round.
-    single = len(receipts) == len(expenses) == 1 and len(rounds) == 1
+    single = len(receipts) == len(expenses) == 1 and len(rounds) <= 1
     if single:
         receipt, expense = receipts[0], expenses[0]
-        if expense.get('round_number') is None and expense.get('total_amount') == receipt['total'] and receipt['round'] in rounds:
-            expense['round_number'] = receipt['round']
+        explicit_rounds = {int(n) for n in re.findall(r'(?<!\d)(\d+)차', user_text)}
+        if expense.get('total_amount') == receipt['total'] and explicit_rounds <= {receipt['round']}:
+            # The approved receipt is authoritative for its round. A null or
+            # mismatched model-generated round is not a new user fact.
+            records = result.get('rounds') or []
+            if len(records) <= 1:
+                record = records[0] if records else {}
+                record['round_number'] = receipt['round']
+                result['rounds'] = [record]
+                rounds = {receipt['round']: record}
+                expense['round_number'] = receipt['round']
+        else:
+            single = False
     # Match by verified (round, total); prevent ambiguous many-to-many matches.
     rc = Counter((r['round'], r['total']) for r in receipts)
     ec = Counter((e.get('round_number'), e.get('total_amount')) for e in expenses)
@@ -109,6 +120,10 @@ def reconcile_reviewed_receipts(data, evidence, user_text):
         round_number = receipt['round']
         current_round = rounds.get(round_number) or {}
         attendees = current_round.get('participant_names') or []
+        # For an explicit exclusion, known names are sufficient to identify
+        # the excluded person even when the attendance list is missing.
+        if single and not attendees:
+            attendees = result.get('participants') or []
         if not attendees or len(attendees) != len(set(attendees)):
             continue
         if current_round.get('participant_count') is not None and len(attendees) != current_round['participant_count']:
@@ -135,6 +150,8 @@ def reconcile_reviewed_receipts(data, evidence, user_text):
                         related = [x for x in existing_exceptions if x.get('expense_index') == ei and x.get('item_index') == ii and x.get('participant_name') == name]
                         if not related and not any(x.get('expense_index') is None or (x.get('expense_index') == ei and x.get('item_index') is None) for x in existing_exceptions):
                             result.setdefault('exceptions', []).append({'expense_index':ei,'item_index':ii,'participant_name':name,'kind':'exclude','reason':'사용자 명시 술값 제외'})
+            continue
+        if not current_round.get('participant_names'):
             continue
         if all_equal and excluded:
             # Explicit exceptions would make 'everyone equal' ambiguous.

@@ -41,3 +41,29 @@ def test_confirmed_candidates_pass_review():
     result=reconcile_reviewed_receipts(context(),EVIDENCE,TEXT)
     result['split_rules']=[{'expense_index':0,'item_index':i,'method':'equal','participant_names':NAMES} for i in range(5)]
     assert not review_context(validate_context_data(result))
+
+def test_single_receipt_repairs_null_round_record():
+    data=context();data['rounds'][0]['round_number']=None
+    result=reconcile_reviewed_receipts(data,EVIDENCE,TEXT)
+    assert result['rounds'][0]['round_number']==result['expenses'][0]['round_number']==1
+    assert not any(x.code=='unresolved_round' for x in review_context(validate_context_data(result)))
+
+
+def test_single_receipt_without_round_record():
+    data=context();data['rounds']=[]
+    result=reconcile_reviewed_receipts(data,EVIDENCE,TEXT)
+    assert result['rounds']==[{'round_number':1}]
+    assert result['expenses'][0]['round_number']==1
+    assert {(x['item_index'],x['participant_name']) for x in result['exceptions']}=={(1,'영희'),(2,'영희')}
+
+
+def test_explicit_conflicting_round_not_overwritten():
+    data=context();data['rounds'][0]['round_number']=2;data['expenses'][0]['round_number']=2
+    result=reconcile_reviewed_receipts(data,EVIDENCE,'2차는 '+TEXT)
+    assert result['expenses'][0]['round_number']==2
+
+
+def test_selected_members_excluding_alcohol_exception_pass_review():
+    result=reconcile_reviewed_receipts(context(),EVIDENCE,TEXT)
+    result['split_rules']=[{'expense_index':0,'item_index':i,'method':'equal','participant_names':[n for n in NAMES if i not in (1,2) or n!='영희']} for i in range(5)]
+    assert not review_context(validate_context_data(result))
