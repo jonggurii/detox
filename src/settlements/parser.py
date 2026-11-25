@@ -1,7 +1,7 @@
 """추출, 로컬 스키마 검증, 입력 검토. 사용자 확인은 별도 단계다."""
 from collections import Counter, defaultdict
 from functools import lru_cache
-from .gemini_client import get_client, get_model
+from .gemini_client import get_client, get_model, generation_limits, log_usage
 from .receipt_reconciliation import reconcile_reviewed_receipts
 from hashlib import sha256
 from pathlib import Path
@@ -370,12 +370,14 @@ def parse_and_review(
     feedback = ""
     # 신규 프로젝트에서 Gemini 2.5 접근이 제한될 수 있으므로 3.x 모델만 사용한다.
     # Render의 GEMINI_FALLBACK_MODEL로 대체 모델을 교체하거나 비활성화할 수 있다.
-    fallback = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite").strip()
+    fallback = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.1-flash-lite").strip()
     models = [selected]
     if fallback and fallback != selected:
         models.append(fallback)
     generation_schema = _generation_schema(schema)
-    log = logging.getLogger(__name__)
+    log = logging.getLogger("uvicorn.error")
+    calls = 0
+    deadline = time.monotonic() + 110
 
     for attempt in (1, 2):
         # attempt는 JSON 출력/검증 실패 시 형식 수정을 위한 반복이다.
@@ -384,7 +386,11 @@ def parse_and_review(
         response = None
         used_model = selected
         for model_name in models:
-            started = time.perf_counter()
+            if calls >= 2 or time.monotonic() + 45 > deadline:
+                raise ParserAPIError("정산 분석 요청 한도에 도달했습니다. 직접 입력하거나 잠시 후 다시 시도해 주세요.")
+            calls += 1
+            started = time.monotonic()
+            log.info("Gemini start: stage=parse model=%s call=%s", model_name, calls)
             try:
                 response = client.models.generate_content(
                     model=model_name,
@@ -394,12 +400,14 @@ def parse_and_review(
                         "response_mime_type": "application/json",
                         "response_json_schema": generation_schema,
                         "temperature": 0,
+                        **generation_limits(model_name),
                     },
                 )
                 used_model = model_name
+                log_usage(response, model_name, "parse", calls, started)
                 log.info(
                     "Gemini parse succeeded: model=%s format_attempt=%s elapsed=%.2fs",
-                    model_name, attempt, time.perf_counter() - started,
+                    model_name, attempt, time.monotonic() - started,
                 )
                 break
             except Exception as exc:
@@ -420,8 +428,10 @@ def parse_and_review(
                     "Gemini parse failed: model=%s format_attempt=%s status=%s "
                     "elapsed=%.2fs error=%s",
                     model_name, attempt, status,
-                    time.perf_counter() - started, detail[:500],
+                    time.monotonic() - started, detail[:500],
                 )
+                if status == 429 or "RESOURCE_EXHAUSTED" in detail:
+                    raise ParserAPIError("Gemini API 사용량 제한에 도달했습니다. 할당량을 확인해 주세요.") from exc
                 if not retryable:
                     raise ParserAPIError(
                         f"Gemini 요청 실패 (HTTP {status or 'unknown'}). 서버 로그를 확인해 주세요."
@@ -441,11 +451,7 @@ def parse_and_review(
         finish = getattr(finish, "name", finish)
 
         if finish == "MAX_TOKENS":
-            feedback = (
-                "\n이전 응답이 잘렸습니다. "
-                "설명 없이 완전한 JSON 객체만 반환하세요."
-            )
-            continue
+            raise ManualInputRequired("출력 토큰 한도에 도달했습니다. 정산 내용을 나누거나 직접 입력해 주세요.")
 
         if finish != "STOP":
             raise ParserAPIError(
@@ -540,18 +546,7 @@ def parse_and_review(
         context = normalize_explicit_amount_rules(context)
         issues = review_context(context, schema=schema)
 
-        missing_rules = [issue for issue in issues if issue.code == "rule_count"]
-        if missing_rules and attempt == 1:
-            missing = ", ".join(issue.path for issue in missing_rules)
-            feedback = (
-                "\n이전 JSON에서 항목별 분담 규칙이 누락되거나 다른 항목에 합쳐졌습니다. "
-                f"누락/중복 검증 위치: {missing}. "
-                "expenses의 각 items 항목마다 정확히 하나의 split_rules를 생성하세요. "
-                "서로 다른 item_index에 대한 individual_amounts를 한 규칙에 합치지 마세요. "
-                "이미 정확한 다른 항목의 정보는 보존하고 원문에 없는 규칙은 추측하지 마세요."
-            )
-            continue
-
+        # 누락된 분담 규칙은 검토 화면에 전달한다. 전체 JSON 자동 재생성 금지.
         return ParseResult(
             context=context,
             issues=issues,
@@ -1105,7 +1100,7 @@ def main():
         print(f"처리 실패: {exc}")
         return 1
     print(result.model_dump_json(indent=2))
-    print(f"총 소요 시간: {time.perf_counter() - started:.2f}초")
+    print(f"총 소요 시간: {time.monotonic() - started:.2f}초")
     print("스키마·자동 검토 결과이며, 원문 대조와 사용자 확인이 필요합니다.")
     return 0
 

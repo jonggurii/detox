@@ -9,6 +9,7 @@ import sqlite3
 import logging
 
 from threading import Lock
+from hashlib import sha256
 from typing import Literal
 from pydantic import StrictBool
 from settlements.reminder_writer import generate_reminder
@@ -117,6 +118,8 @@ def create_app(db_path=None, parser=None, ocr=None):
 
     store = WorkflowStore(db_path or ROOT / "data" / "settlements.sqlite3")
     parse = parser or parse_and_review
+    active_parses = set()
+    active_parses_lock = Lock()
     reminder_limits = {}
     reminder_limits_lock = Lock()
 
@@ -257,8 +260,19 @@ def create_app(db_path=None, parser=None, ocr=None):
     def new_session(body: ParseBody):
         if not body.text.strip():
             raise HTTPException(422, "정산 내용을 입력해 주세요.")
-        sid = store.start(extract(body))
-        return store.view(sid)
+        key = sha256(json.dumps([body.text, body.supplied_evidence], ensure_ascii=False).encode()).hexdigest()
+        with active_parses_lock:
+            if key in active_parses:
+                raise HTTPException(409, "동일한 정산 요청을 처리 중입니다. 잠시 후 확인해 주세요.")
+            active_parses.add(key)
+        logger.info("Settlement parse start: request=%s", key[:12])
+        try:
+            sid = store.start(extract(body))
+            return store.view(sid)
+        finally:
+            with active_parses_lock:
+                active_parses.discard(key)
+            logger.info("Settlement parse end: request=%s", key[:12])
 
     @app.post("/api/sessions/manual")
     def manual_session(body: ManualBody):

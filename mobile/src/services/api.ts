@@ -14,19 +14,21 @@ export async function request<T>(path:string, method='GET', body?:unknown):Promi
   if(!BASE) throw new Error('mobile/.env에 EXPO_PUBLIC_API_URL=http://PC_IP:8000을 설정하세요.');
   const timeoutMs =
     path === '/api/receipts/multimodal-confirm' ||
-    path === '/api/sessions'
-      ? 180000
+    path === '/api/sessions' ||
+    path === '/parse' || /^\/api\/receipts\/[^/]+\/ai$/.test(path)
+      ? 150000
       : 60000;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  console.log('[API REQUEST]', method, BASE+path);
   try {
     const response=await fetch(BASE+path,{method,headers:body===undefined?undefined:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal});
     const text=await response.text(); let data:any=text;
     try{data=text?JSON.parse(text):null;}catch{}
     if(!response.ok){const detail=data?.detail; throw new Error(typeof detail==='string'?detail:JSON.stringify(detail??data??`HTTP ${response.status}`));}
     return data as T;
-  }catch(e:any){if(e?.name==='AbortError')throw new Error('서버 연결 시간이 초과됐어요. PC·스마트폰 네트워크와 FastAPI를 확인하세요.');throw e;}
+  }catch(e:any){if(controller.signal.aborted || e?.name==='AbortError')throw new Error('서버 응답 시간이 초과됐어요. 중복 과금을 피하려면 즉시 다시 요청하지 말고 서버 로그를 확인해 주세요.');throw e;}
   finally{clearTimeout(timer);}
 }
 export const sessionApi={
@@ -152,7 +154,7 @@ export async function analyzeImage(
     // 8. 오류 메시지 출력
     console.error('[UPLOAD ERROR]', e);
 
-    if (e?.name === 'AbortError') {
+    if (controller.signal.aborted || e?.name === 'AbortError') {
       throw new Error(
         '사진 분석 시간이 초과됐어요. 서버 로그를 확인해 주세요.'
       );
@@ -246,7 +248,7 @@ export async function previewImage(
   } catch (e: any) {
     console.error('[PREVIEW ERROR]', e);
 
-    if (e?.name === 'AbortError') {
+    if (controller.signal.aborted || e?.name === 'AbortError') {
       throw new Error('사진 분석 시간이 초과됐어요.');
     }
 

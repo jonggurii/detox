@@ -8,11 +8,12 @@ import time
 from PIL import Image, ImageOps, UnidentifiedImageError
 from .gemini_client import (
     get_client,
-    get_model,
     get_multimodal_model,
+    generation_limits,
+    log_usage,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 MAX_BYTES = 10 * 1024 * 1024
 MAX_PIXELS = 12_000_000
@@ -120,6 +121,7 @@ class GeminiReceiptReader:
         buffer = BytesIO()
         image.save(buffer, format="PNG")
 
+        model = get_multimodal_model()
         try:
             if self.client is None:
                 from google.genai import types
@@ -136,43 +138,25 @@ class GeminiReceiptReader:
                 }
 
             client = self.client or get_client()
-            model = get_multimodal_model()
 
-            for attempt in range(2):
-                try:
-                    response = client.models.generate_content(
-                        model=model,
-                        contents=[part, PROMPT],
-                        config={
-                            "temperature": 0,
-                            "response_mime_type": "application/json",
-                            "response_json_schema": RECEIPT_SCHEMA,
-                        },
-                    )
-                    break
-
-                except Exception as exc:
-                    status = getattr(exc, "code", None)
-
-                    if status is None:
-                        status = getattr(exc, "status_code", None)
-
-                    try:
-                        status = int(status)
-                    except (TypeError, ValueError):
-                        status = None
-
-                    if status not in (429, 503) or attempt == 1:
-                        raise
-
-                    logger.warning(
-                        "Gemini receipt retry: model=%s status=%s attempt=%s",
-                        model,
-                        status,
-                        attempt + 1,
-                    )
-
-                    time.sleep(2 ** attempt)
+            started = time.monotonic()
+            logger.info("Gemini start: stage=receipt model=%s", model)
+            response = client.models.generate_content(
+                model=model,
+                contents=[part, PROMPT],
+                config={
+                    "temperature": 0,
+                    "response_mime_type": "application/json",
+                    "response_json_schema": RECEIPT_SCHEMA,
+                    **generation_limits(model, receipt=True),
+                },
+            )
+            log_usage(response, model, "receipt", 1, started)
+            candidates = getattr(response, "candidates", None) or []
+            if candidates:
+                finish = getattr(candidates[0], "finish_reason", None)
+                if getattr(finish, "name", finish) == "MAX_TOKENS":
+                    raise ReceiptExtractionError("영수증 출력 한도에 도달했습니다.")
 
         except Exception as exc:
             logger.error(
