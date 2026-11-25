@@ -43,14 +43,14 @@ def _round_segment(text, round_number):
     return ''
 
 
-def _excluded_names(text, known_names, round_number):
+def _excluded_names(text, known_names, round_number, single=False):
     # Exclusion must be explicit and refer to this round's alcohol expense;
     # do not treat 'did not drink' alone as a bill-splitting agreement.
-    segment = _round_segment(text, round_number)
+    segment = _round_segment(text, round_number) or (text if single else "")
     if not segment:
         return []
     selected = []
-    clauses = re.split(r'[.\n]', segment)
+    clauses = re.split(r'[.\n]|결제했고|결제하였고|냈고', segment)
     for clause in clauses:
         if not ('술값' in clause or '주류' in clause):
             continue
@@ -75,6 +75,13 @@ def reconcile_reviewed_receipts(data, evidence, user_text):
     result = copy.deepcopy(data)
     expenses = result.get('expenses', [])
     rounds = {r.get('round_number'): r for r in (result.get('rounds') or []) if isinstance(r, dict)}
+    # Only a single verified receipt and a single compatible expense permit
+    # implicit round binding. Never override a conflicting explicit round.
+    single = len(receipts) == len(expenses) == 1 and len(rounds) == 1
+    if single:
+        receipt, expense = receipts[0], expenses[0]
+        if expense.get('round_number') is None and expense.get('total_amount') == receipt['total'] and receipt['round'] in rounds:
+            expense['round_number'] = receipt['round']
     # Match by verified (round, total); prevent ambiguous many-to-many matches.
     rc = Counter((r['round'], r['total']) for r in receipts)
     ec = Counter((e.get('round_number'), e.get('total_amount')) for e in expenses)
@@ -88,7 +95,11 @@ def reconcile_reviewed_receipts(data, evidence, user_text):
         # Do not overwrite contradictory nonempty LLM items without a safe
         # one-to-one mapping for references. Empty items are safe to restore.
         if old_items and old_items != receipt['items']:
-            continue
+            # Restore only if no positional references can be corrupted.
+            refs = [x for k in ('split_rules','exceptions','contributions') for x in result.get(k, []) if x.get('expense_index') in (None, ei)]
+            if refs:
+                continue
+            expense['items'] = copy.deepcopy(receipt['items'])
         if not old_items:
             expense['items'] = copy.deepcopy(receipt['items'])
         expense['receipt_total_amount'] = receipt['total']
@@ -104,16 +115,26 @@ def reconcile_reviewed_receipts(data, evidence, user_text):
             continue
         if any(n not in result.get('participants', []) for n in attendees):
             continue
-        section = _round_segment(user_text, round_number)
+        section = _round_segment(user_text, round_number) or (user_text if single else "")
         if not section:
             continue
         existing_rules = result.get('split_rules') or []
         existing_exceptions = result.get('exceptions') or []
         all_equal = bool(re.search(r'모두\s*동일하게|모두\s*똑같이|전원\s*균등|전체\s*균등', section))
         split_food = bool(re.search(r'나머지\s*음식값은?\s*\d+명이\s*똑같이|나머지\s*음식값은?\s*\d+명이\s*균등', section))
-        excluded = _excluded_names(user_text, attendees, round_number)
+        excluded = _excluded_names(user_text, attendees, round_number, single)
         alcohol_explicit = bool(excluded and '술값' in section and re.search(r'술값.{0,30}제외|술값에서는\s*제외', section))
         if not all_equal and not (split_food and alcohol_explicit):
+            # Explicit alcohol exclusion is known; food allocation remains a
+            # user choice. Preserve any existing rules and unrelated exceptions.
+            if alcohol_explicit:
+                for ii, item in enumerate(receipt['items']):
+                    if not ALCOHOL.search(item['name']):
+                        continue
+                    for name in excluded:
+                        related = [x for x in existing_exceptions if x.get('expense_index') == ei and x.get('item_index') == ii and x.get('participant_name') == name]
+                        if not related and not any(x.get('expense_index') is None or (x.get('expense_index') == ei and x.get('item_index') is None) for x in existing_exceptions):
+                            result.setdefault('exceptions', []).append({'expense_index':ei,'item_index':ii,'participant_name':name,'kind':'exclude','reason':'사용자 명시 술값 제외'})
             continue
         if all_equal and excluded:
             # Explicit exceptions would make 'everyone equal' ambiguous.
