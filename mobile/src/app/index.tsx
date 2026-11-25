@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import {sessionApi,previewImage,confirmImage,reminderApi} from '../services/api';
+import {explainTransfers,personExplanation} from '../services/settlementExplanation';
 import type {ImagePreview} from '../services/api';
 import type {Calculation,Json,Session,SessionSummary} from '../services/api';
 
@@ -60,28 +61,7 @@ const groupedTransfers=(rows:Array<{from_participant:string;to_participant:strin
  return [...grouped.values()].sort((a,b)=>ko.compare(a.from_participant,b.from_participant)||ko.compare(a.to_participant,b.to_participant));
 };
 // 차수별 송금을 서로 상계하여 실제 보낼 송금만 계산한다. 원본 내역은 따로 보존한다.
-const netTransfers=(rows:Array<{from_participant:string;to_participant:string;amount:number}>)=>{
- const balance=new Map<string,number>();
- for(const t of rows){
-  if(!Number.isSafeInteger(t.amount)||t.amount<0||!t.from_participant||!t.to_participant||t.from_participant===t.to_participant)throw new Error('송금 데이터가 올바르지 않습니다.');
-  balance.set(t.from_participant,(balance.get(t.from_participant)||0)-t.amount);
-  balance.set(t.to_participant,(balance.get(t.to_participant)||0)+t.amount);
- }
- const cmp=(a:string,b:string)=>a<b?-1:a>b?1:0;
- const debt=[...balance].filter(([,n])=>n<0).map(([name,n])=>({name,amount:-n})).sort((a,b)=>b.amount-a.amount||cmp(a.name,b.name));
- const credit=[...balance].filter(([,n])=>n>0).map(([name,n])=>({name,amount:n})).sort((a,b)=>b.amount-a.amount||cmp(a.name,b.name));
- const result:Array<{from_participant:string;to_participant:string;amount:number}>=[];
- let i=0,j=0;
- while(i<debt.length&&j<credit.length){
-  const amount=Math.min(debt[i].amount,credit[j].amount);
-  if(amount)result.push({from_participant:debt[i].name,to_participant:credit[j].name,amount});
-  debt[i].amount-=amount;credit[j].amount-=amount;
-  if(!debt[i].amount)i++;
-  if(!credit[j].amount)j++;
- }
- if(i!==debt.length||j!==credit.length)throw new Error('차수 간 잔액을 정산하지 못했습니다.');
- return result;
-};
+const netTransfers=(rows:Parameters<typeof explainTransfers>[0])=>explainTransfers(rows).result;
 const effectiveTransfers=(calc:Calculation,localDiff=false)=>localDiff
  ?groupedTransfers(calc.result.settlements)
  :netTransfers(calc.result.settlements);
@@ -825,6 +805,8 @@ export default function HomeScreen(){
  const Summary=({context}:{context:Json})=><View><View style={styles.infoRow}><Text style={styles.infoLabel}>참여자</Text><Text style={styles.infoValue}>{(context.participants||[]).join(', ')||'미입력'}</Text></View>{(context.rounds||[]).map((r:any,i:number)=><View key={i} style={styles.infoRow}><Text style={styles.infoLabel}>{r.round_number??i+1}차 참석</Text><Text style={styles.infoValue}>{(r.participant_names||[]).join(', ')||'확인 필요'}</Text></View>)}{(context.expenses||[]).map((e:any,i:number)=><View key={i} style={styles.summaryBox}><Text style={styles.subhead}>{i+1}번 결제 · {e.round_number?`${e.round_number}차`: '차수 미지정'}</Text><Text style={styles.cardAmount}>{money(e.total_amount)}</Text><Text style={styles.muted}>결제자: {e.payer_name||'확인 필요'}</Text>{(e.items||[]).map((item:any,j:number)=><Text key={j} style={styles.itemText}>· {item.name||'항목 미정'} {money(item.amount)}</Text>)}</View>)}{(context.direct_transfers||[]).map((t:any,i:number)=><View key={'direct'+i} style={styles.infoRow}><Text style={styles.infoLabel}>{t.from_participant} → {t.to_participant}</Text><Text style={styles.infoValue}>{money(t.amount)}</Text></View>)}{[['split_rules','분담 기준'],['exceptions','개인별 예외'],['contributions','찬조금']].map(([key,label])=>(context[key]||[]).length?<View key={key} style={styles.infoRow}><Text style={styles.infoLabel}>{label}</Text><Text style={styles.infoValue}>{context[key].length}건 · 상세 수정에서 확인</Text></View>:null)}</View>;
  const PaymentList=({d,calc}:{d:Session;calc:Calculation})=>{
   const [detailedTransfersOpen,setDetailedTransfersOpen]=useState(false);
+  const [explanationPerson,setExplanationPerson]=useState('');
+  const [stepOpen,setStepOpen]=useState(false);
   const sid=d.session_id;
   const paid=meta[sid]?.transferPaid||{};
   const externalOnly=d.revisions[d.revisions.length-1]?.context?.reminder_handling==='external_service_only';
@@ -976,6 +958,38 @@ export default function HomeScreen(){
      <Text style={styles.infoLabel}>{(d.revisions[d.revisions.length-1]?.context?.expenses||[])[t.expense_index]?.round_number??'?'}차 · {t.from_participant} → {t.to_participant}</Text>
      <Text style={styles.infoValue}>{money(t.amount)}</Text>
     </View>)}
+    {detailedTransfersOpen&&(()=>{
+     const context=d.revisions.find(r=>r.input_revision===calc.input_revision)?.context;
+     const expenses=context?.expenses||[];
+     const trace=explainTransfers(calc.result.settlements);
+     const names=Array.from(new Set<string>([...(context?.participants||[]),...trace.balance.keys()]));
+     const name=names.includes(explanationPerson)?explanationPerson:names[0];
+     const info=name?personExplanation(name,calc.result.settlements,expenses,trace.result):null;
+     return <View style={{gap:12}}>
+      <Text style={styles.subhead}>개인별 최종 정산금액 산출 근거</Text>
+      <Text style={styles.helper}>차수별 받을 금액에서 보낼 금액을 빼면 최종 순잔액이 됩니다. 찬조와 예외가 반영된 확정 송금 내역을 사용합니다.</Text>
+      <View style={styles.wrap}>{names.map(n=><Chip key={n} text={n} active={name===n} onPress={()=>setExplanationPerson(n)}/>)}</View>
+      {info&&<View style={styles.transferCard}>
+       <Text style={styles.subhead}>{name}님의 계산 과정</Text>
+       {info.details.map(r=><View key={r.round} style={{gap:4}}><Text style={styles.label}>{r.round}차</Text><Text style={styles.muted}>받을 {money(r.receive)} − 보낼 {money(r.send)} = {money(r.receive-r.send)}</Text></View>)}
+       {!info.details.length&&<Text style={styles.muted}>차수별 송금 의무가 없습니다.</Text>}
+       <Text style={styles.label}>차수별 항목 부담액 (찬조 공제 후)</Text>
+       {calc.result.allocations.filter(a=>a.participant_name===name).map((a,i)=><Text key={i} style={styles.muted}>{expenses[a.expense_index]?.round_number??'?'}차 · {expenses[a.expense_index]?.items?.[a.item_index]?.name??'항목'}: {money(a.amount)}</Text>)}
+       <Text style={styles.label}>항목 부담 합계: {money(calc.result.participant_totals[name]??0)}</Text>
+       <Text style={styles.subhead}>{money(info.receive)} − {money(info.send)} = {money(info.balance)}</Text>
+       <Text style={styles.cardAmount}>{info.balance>0?'최종 받을 금액':info.balance<0?'최종 보낼 금액':'정산 완료 금액'} {money(Math.abs(info.balance))}</Text>
+       <Text style={styles.label}>최적화 전 송금 관계</Text>
+       {info.before.map((t,i)=><Text key={i} style={styles.muted}>{expenses[t.expense_index]?.round_number??'?'}차 · {t.from_participant} → {t.to_participant}: {money(t.amount)}</Text>)}
+       <Text style={styles.label}>최적화 후 송금 관계</Text>
+       {info.after.map((t,i)=><Text key={i} style={styles.subhead}>{t.from_participant} → {t.to_participant}: {money(t.amount)}</Text>)}
+       {!info.after.length&&<Text style={styles.muted}>최종 송금 없음</Text>}
+       <Text style={styles.helper}>송금 대상은 전체 차수의 순잔액을 상계하면서 바뀔 수 있지만 개인별 순잔액은 유지됩니다.</Text>
+      </View>}
+      <Pressable onPress={()=>setStepOpen(v=>!v)} style={styles.rowBetween}><Text style={styles.subhead}>송금 최적화 산출 과정</Text><Text style={styles.link}>{stepOpen?'접기 ▲':'펼치기 ▼'}</Text></Pressable>
+      <Text style={styles.muted}>{calc.result.settlements.length}건 → {trace.result.length}건</Text>
+      {stepOpen&&trace.steps.map((t,i)=><View key={i} style={styles.transferCard}><Text style={styles.label}>{i+1}단계 · {t.from_participant} → {t.to_participant}</Text><Text style={styles.muted}>남은 송금액 {money(t.debtBefore)} / 남은 수취액 {money(t.creditBefore)}</Text><Text style={styles.subhead}>두 금액 중 작은 금액: {money(t.amount)}</Text><Text style={styles.muted}>{t.from_participant} 남은 송금액: {money(t.debtAfter)}</Text><Text style={styles.muted}>{t.to_participant} 남은 수취액: {money(t.creditAfter)}</Text></View>)}
+     </View>;
+    })()}
    </View>}
    <Text style={styles.helper}>입금 여부는 총무가 직접 확인하는 기록이며 은행 거래 내역과 자동 연동되지 않습니다. 같은 송금자라도 수취인이 다르면 별도로 확인할 수 있어요. 차수 간 주고받을 금액은 서로 상계하여 최종 송금만 표시합니다.</Text>
   </View>;

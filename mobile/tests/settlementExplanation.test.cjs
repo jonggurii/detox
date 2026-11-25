@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict');
+const {explainTransfers,personExplanation}=require(process.argv[2]);
+const row=(a,b,amount,expense_index=0)=>({from_participant:a,to_participant:b,amount,expense_index});
+const rows=[row('A','B',100),row('B','C',70,1),row('D','B',20,1)];
+const trace=explainTransfers(rows);
+assert.deepEqual(trace.result,[row('A','C',70),row('A','B',30),row('D','B',20)].map(({expense_index,...r})=>r));
+const b=personExplanation('B',rows,[{round_number:1},{round_number:2}],trace.result);
+assert.equal(b.balance,50);assert.equal(b.receive,120);assert.equal(b.send,70);assert.equal(b.details.length,2);
+assert.equal(trace.steps[0].debtAfter,30);assert.equal(trace.steps[0].creditAfter,0);
+assert.deepEqual(explainTransfers([row('A','B',10),row('B','A',10)]).result,[]);
+assert.deepEqual(explainTransfers([]).steps,[]);
+assert.throws(()=>explainTransfers([row('A','A',10)]));
+console.log('Settlement explanation tests passed');
