@@ -14,6 +14,9 @@ from time import perf_counter
 import json
 import logging
 import os
+import re
+import subprocess
+from functools import lru_cache
 import uuid
 
 _LOG = logging.getLogger(__name__)
@@ -46,6 +49,44 @@ def _append(record: dict) -> None:
                 stream.write(line)
     except OSError:
         _LOG.warning("Trace storage unavailable (input not logged)")
+
+
+@lru_cache(maxsize=1)
+def _local_git_commit() -> str:
+    """Read local revision once per process; never capture or log Git stderr."""
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=_DEFAULT_PATH.parents[1],
+            check=True, capture_output=True, text=True, timeout=2,
+        )
+        value = completed.stdout.strip()
+        return value if re.fullmatch(r"[0-9a-fA-F]{7,40}", value) else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def _current_commit() -> str:
+    """Prefer the deployment revision; fall back to the local Git checkout."""
+    value = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "").strip()
+    if re.fullmatch(r"[0-9a-fA-F]{7,40}", value):
+        return value
+    return _local_git_commit()
+
+
+def set_trace_model(model: str, prompt_version: str) -> None:
+    """Annotate the active API trace only when an actual model call is attempted.
+
+    Never pass a prompt body, exception text, request content, token, or username.
+    """
+    current = _ACTIVE.get()
+    if current is None:
+        return  # CLI evals run without an API request trace.
+    if isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", model):
+        current["model"] = model
+    if (isinstance(prompt_version, str) and len(prompt_version) <= 100
+            and re.fullmatch(r"[A-Za-z0-9._:/ -]+", prompt_version)):
+        current["prompt_version"] = prompt_version
 
 
 @contextmanager
@@ -93,9 +134,9 @@ async def trace_request(request, call_next):
         },
         "stages": [],
         "output": {"status_code": 500, "status": "failed"},
-        "commit": os.getenv("RENDER_GIT_COMMIT", "unknown"),
-        "model": model,
-        "prompt_version": os.getenv("TRACE_PROMPT_VERSION", "unavailable"),
+        "commit": _current_commit(),
+        "model": "not-called",
+        "prompt_version": "not-applicable",
         "latency_ms": 0,
         "error": None,
     }

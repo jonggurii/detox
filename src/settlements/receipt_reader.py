@@ -6,6 +6,7 @@ import logging
 import time
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+from .trace_logging import set_trace_model
 from .gemini_client import (
     get_client,
     get_multimodal_model,
@@ -141,6 +142,7 @@ class GeminiReceiptReader:
 
             started = time.monotonic()
             logger.info("Gemini start: stage=receipt model=%s", model)
+            set_trace_model(get_multimodal_model(), f"receipt_extraction v{PROMPT_VERSION}")
             response = client.models.generate_content(
                 model=model,
                 contents=[part, PROMPT],
