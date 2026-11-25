@@ -955,7 +955,6 @@ export default function HomeScreen(){
           <Switch value={repeat} onValueChange={value=>chooseRepeat(t.key,value)} trackColor={{false:'#D7DDD7',true:'#8EC2A9'}} thumbColor={repeat?C.green:'#F7F8F6'}/>
          </View>
          <Text style={styles.muted}>{repeat?'재안내 문구':'첫 안내 문구'} · {draft?.source==='gemini'?'Gemini 작성':draft?.source==='template'?'기본 문구(대체)':'기본 문구'} · {sid.startsWith('local-diff-')?'직접 입력한 송금액':'확정 계산된 송금액'} 기준</Text>
-         <Button text={aiReminderBusyKey===draftKey?'AI 문구 생성 중…':'✨ Gemini로 안내 문구 만들기'} secondary small disabled={!!aiReminderBusyKey} onPress={()=>createAiReminder(t,tone,style,repeat,draftKey)}/>
          <Text style={styles.reminderMessage}>{msg}</Text>
          <View style={styles.wrap}>
           <Button text="문구 복사" secondary small onPress={()=>copyReminder(msg).catch(e=>Alert.alert('복사 실패',String(e?.message||e)))}/>
