@@ -5,6 +5,7 @@ import httpx
 import asyncio
 
 from settlements.receipt_reader import MAX_BYTES, GeminiReceiptReader, ReceiptExtractionError
+from settlements.trace_logging import trace_stage
 
 
 def make_multimodal_router(app):
@@ -20,7 +21,8 @@ def make_multimodal_router(app):
         if not data or len(data) > MAX_BYTES:
             raise HTTPException(413, "이미지는 10MB 이하로 첨부해 주세요.")
         try:
-            result = await asyncio.to_thread(GeminiReceiptReader().extract_bytes, data)
+            with trace_stage("receipt_extraction"):
+                result = await asyncio.to_thread(GeminiReceiptReader().extract_bytes, data)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except ReceiptExtractionError as exc:
@@ -41,10 +43,11 @@ def make_multimodal_router(app):
         # 사용자가 실제 확인한 텍스트만 정산 파서로 전달한다.
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://localhost", timeout=150) as client:
-            res = await client.post("/api/sessions", json={
-                "text": body.text.strip() or "영수증에 기재된 결제 내용을 검토해 줘.",
-                "supplied_evidence": body.reviewed_text,
-            })
+            with trace_stage("confirmed_context_parsing"):
+                res = await client.post("/api/sessions", json={
+                    "text": body.text.strip() or "영수증에 기재된 결제 내용을 검토해 줘.",
+                    "supplied_evidence": body.reviewed_text,
+                })
         try:
             response = res.json()
         except ValueError as exc:

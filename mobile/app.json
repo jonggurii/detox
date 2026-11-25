@@ -1,4 +1,3 @@
-
 {
   "expo": {
     "name": "모아정산",
@@ -42,7 +41,9 @@
             "usesCleartextTraffic": true
           }
         }
-      ]
+      ],
+      "expo-status-bar",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,

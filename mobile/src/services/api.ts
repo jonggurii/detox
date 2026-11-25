@@ -1,5 +1,4 @@
 import { File } from 'expo-file-system';
-import { Platform } from 'react-native';
 
 export type Json = Record<string, any>;
 export type Issue = {code: string; path: string; question: string};
@@ -9,39 +8,27 @@ export type Calculation = {calculation_id?:string;input_revision:number; result:
 export type Session = {session_id:string; source_text:string; supplied_evidence?:string|null; revisions:Revision[]; calculations:Calculation[]};
 export type SessionSummary = {session_id:string; title?:string; created_at?:string; input_revision?:number};
 export type Receipt = {receipt_id:string; review_revision:number; warning?:string|null; ocr?:{text?:string};fields?:{items?:Array<{name?:string|null;amount?:number|null}>;total_amount?:number|null;warnings?:string[]};review?:Json|null};
-const WEB_ORIGIN =
-  Platform.OS === 'web' && typeof window !== 'undefined'
-    ? window.location.origin
-    : '';
-
-const IS_LOCAL_WEB =
-  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(WEB_ORIGIN);
-
-// Render에 배포된 웹은 같은 서버를 API로 사용한다.
-// 로컬 Expo 웹과 Android는 EXPO_PUBLIC_API_URL을 사용한다.
-const BASE = (
-  WEB_ORIGIN && !IS_LOCAL_WEB
-    ? WEB_ORIGIN
-    : process.env.EXPO_PUBLIC_API_URL || WEB_ORIGIN
-).replace(/\/$/, '');
+const BASE = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/$/, '');
 export const apiBase = () => BASE;
 export async function request<T>(path:string, method='GET', body?:unknown):Promise<T>{
   if(!BASE) throw new Error('mobile/.env에 EXPO_PUBLIC_API_URL=http://PC_IP:8000을 설정하세요.');
   const timeoutMs =
     path === '/api/receipts/multimodal-confirm' ||
-    path === '/api/sessions'
-      ? 180000
+    path === '/api/sessions' ||
+    path === '/parse' || /^\/api\/receipts\/[^/]+\/ai$/.test(path)
+      ? 150000
       : 60000;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  console.log('[API REQUEST]', method, BASE+path);
   try {
     const response=await fetch(BASE+path,{method,headers:body===undefined?undefined:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal});
     const text=await response.text(); let data:any=text;
     try{data=text?JSON.parse(text):null;}catch{}
     if(!response.ok){const detail=data?.detail; throw new Error(typeof detail==='string'?detail:JSON.stringify(detail??data??`HTTP ${response.status}`));}
     return data as T;
-  }catch(e:any){if(e?.name==='AbortError')throw new Error('서버 연결 시간이 초과됐어요. PC·스마트폰 네트워크와 FastAPI를 확인하세요.');throw e;}
+  }catch(e:any){if(controller.signal.aborted || e?.name==='AbortError')throw new Error('서버 응답 시간이 초과됐어요. 중복 과금을 피하려면 즉시 다시 요청하지 말고 서버 로그를 확인해 주세요.');throw e;}
   finally{clearTimeout(timer);}
 }
 export const sessionApi={
@@ -62,9 +49,10 @@ export async function uploadReceipt(uri:string):Promise<Receipt>{
  finally{clearTimeout(timer);}
 }
 export type ReminderTone = 'friend'|'senior'|'junior';
+export type ReminderStyle = 'warm'|'playful'|'firm'|'polite'|'gentle'|'formal'|'friendly'|'considerate'|'clear';
 export type ReminderResponse = {message:string;source:'gemini'|'template';model:string|null;amount_source:'local_manual'|'confirmed_calculation'};
 export const reminderApi = {
- generate:(data:{session_id:string;calculation_id?:string|null;from_participant:string;to_participant:string;local_amount?:number;title:string;tone:ReminderTone;repeat:boolean}) =>
+ generate:(data:{session_id:string;calculation_id?:string|null;from_participant:string;to_participant:string;local_amount?:number;title:string;tone:ReminderTone;style?:ReminderStyle;repeat:boolean;optimized?:boolean}) =>
   request<ReminderResponse>('/api/reminders/generate','POST',data),
 };
 
@@ -166,7 +154,7 @@ export async function analyzeImage(
     // 8. 오류 메시지 출력
     console.error('[UPLOAD ERROR]', e);
 
-    if (e?.name === 'AbortError') {
+    if (controller.signal.aborted || e?.name === 'AbortError') {
       throw new Error(
         '사진 분석 시간이 초과됐어요. 서버 로그를 확인해 주세요.'
       );
@@ -260,7 +248,7 @@ export async function previewImage(
   } catch (e: any) {
     console.error('[PREVIEW ERROR]', e);
 
-    if (e?.name === 'AbortError') {
+    if (controller.signal.aborted || e?.name === 'AbortError') {
       throw new Error('사진 분석 시간이 초과됐어요.');
     }
 

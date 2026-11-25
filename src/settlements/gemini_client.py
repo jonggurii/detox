@@ -1,5 +1,7 @@
 """Gemini 클라이언트와 모델 ID의 단일 설정점 (실제 호출 시에만 SDK 로드)."""
 import os
+import logging
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -12,6 +14,18 @@ def get_model() -> str:
     load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
     return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
 
+def get_multimodal_model() -> str:
+    from dotenv import load_dotenv
+
+    load_dotenv(
+        Path(__file__).resolve().parents[2] / ".env",
+        override=False,
+    )
+
+    return (
+        os.getenv("GEMINI_MULTIMODAL_MODEL")
+        or get_model()
+    ).strip()
 
 @lru_cache(maxsize=1)
 def get_client():
@@ -25,4 +39,27 @@ def get_client():
         from google import genai
     except ImportError as exc:
         raise RuntimeError("google-genai를 설치해 주세요: python -m pip install -r requirements.txt") from exc
-    return genai.Client(api_key=key, http_options={"timeout": 60000, "retry_options": {"attempts": 1}})
+    return genai.Client(api_key=key, http_options={"timeout": 45000, "retry_options": {"attempts": 1}})
+
+
+def generation_limits(model: str, *, receipt: bool = False) -> dict:
+    """Limit output and use thinking settings only for known model IDs."""
+    config = {"max_output_tokens": 4096 if receipt else 8192}
+    name = model.removeprefix("models/")
+    if name == "gemini-3-flash-preview":
+        config["thinking_config"] = {"thinking_level": "minimal" if receipt else "low"}
+    elif name in {"gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"}:
+        config["thinking_config"] = {"thinking_level": "minimal" if receipt else "low"}
+    return config
+
+
+def log_usage(response, model: str, stage: str, attempt: int, started: float):
+    usage = getattr(response, "usage_metadata", None)
+    logging.getLogger("uvicorn.error").info(
+        "Gemini usage: stage=%s requested_model=%s actual_model=%s attempt=%s "
+        "elapsed=%.2fs input=%s output=%s thinking=%s total=%s",
+        stage, model, getattr(response, "model_version", None), attempt,
+        time.monotonic() - started, getattr(usage, "prompt_token_count", None),
+        getattr(usage, "candidates_token_count", None),
+        getattr(usage, "thoughts_token_count", None), getattr(usage, "total_token_count", None),
+    )

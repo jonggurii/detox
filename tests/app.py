@@ -30,7 +30,7 @@ from backend.multimodal_router import make_multimodal_router
 
 from fastapi.middleware.cors import CORSMiddleware
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 logger = logging.getLogger("uvicorn.error")
 
 
