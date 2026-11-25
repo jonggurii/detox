@@ -55,14 +55,15 @@ def test_transparent_background_becomes_white():
     assert prepare_image(stream.getvalue()).getpixel((0, 0)) == (255, 255, 255)
 
 
-def test_structured_image_extraction_uses_shared_model(monkeypatch):
+def test_structured_image_extraction_uses_multimodal_model(monkeypatch):
     monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash")
+    monkeypatch.setenv("GEMINI_MULTIMODAL_MODEL", "gemini-3-flash-preview")
     client = FakeClient(response())
     result = GeminiReceiptReader(client=client).extract_bytes(photo())
     assert result["items"] == [{"name": "식사", "amount": 10000}]
     assert result["total_amount"] == 10000
     assert result["low_score_count"] == 0  # Gemini는 OCR 인식 점수를 제공하지 않음
-    assert client.requests[0]["model"] == "gemini-3.5-flash"
+    assert client.requests[0]["model"] == "gemini-3-flash-preview"
     assert client.requests[0]["config"]["response_mime_type"] == "application/json"
     assert "response_json_schema" in client.requests[0]["config"]
 

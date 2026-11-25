@@ -1,4 +1,3 @@
-
 """확정 정산 숫자는 코드로 고정하고 Gemini는 안내 문장만 작성한다.
 
 모델에 이름, 정산명, 금액, 계좌 등 개인/금융 정보를 보내지 않는다.
@@ -28,6 +27,25 @@ TONES = {
     "senior": "존댓말로 정중하게",
     "junior": "친근하고 부담스럽지 않게",
 }
+
+STYLE_OPTIONS = {
+    "friend": {
+        "warm": "다정하게: 따뜻하고 편안한 반말로, 상대에게 부담을 주지 않고 요청",
+        "playful": "장난스럽게: 가볍고 재치 있는 친구 말투, 비꼬거나 압박하지 않기",
+        "firm": "단호하게: 무례하지 않되 짧고 명확하게 송금 확인 요청",
+    },
+    "senior": {
+        "polite": "공손하게: 기본 존댓말, 예의를 지키며 정중히 요청",
+        "gentle": "부드럽게: 따뜻하고 친근한 존댓말, 감사의 느낌 포함",
+        "formal": "격식 있게: 공식적인 안내 문체, 군더더기 없이 간결하게",
+    },
+    "junior": {
+        "friendly": "친근하게: 밝고 편안한 반말로 가볍게 요청",
+        "considerate": "배려 있게: 상대 사정을 존중하며 부담 없이 확인 부탁",
+        "clear": "깔끔하게: 핵심을 짧고 분명하게 정리하는 반말",
+    },
+}
+DEFAULT_STYLE = {"friend": "warm", "senior": "polite", "junior": "friendly"}
 
 BODY_SCHEMA = {
     "type": "object",
@@ -116,42 +134,32 @@ def _safe_body(
     return body
 
 
-def _fallback_body(tone: str, repeat: bool) -> str:
-    """Gemini 실패 시 기본 안내 문구를 반환한다."""
-
-    if tone == "senior":
-        if repeat:
-            return (
-                "정산 내역을 다시 안내드립니다. "
-                "이미 송금하셨다면 양해 부탁드리며, "
-                "확인 후 알려주시면 감사하겠습니다."
-            )
-        return (
-            "정산 내역을 안내드립니다. "
-            "편하실 때 확인해 주시면 감사하겠습니다."
-        )
-
-    if tone == "junior":
-        if repeat:
-            return (
-                "정산 내역 다시 한번 확인 부탁해! "
-                "이미 보냈다면 알려줘. 고마워 😊"
-            )
-        return (
-            "정산 내역 확인하고 편할 때 "
-            "보내주면 돼! 고마워 😊"
-        )
-
-    if repeat:
-        return (
-            "정산 내역 다시 알려줘! "
-            "이미 보냈다면 말해줘. 고마워 🙏"
-        )
-
-    return (
-        "정산 내역 나왔어! "
-        "확인하고 편할 때 보내주면 고마워 😊"
-    )
+def _fallback_body(tone: str, repeat: bool, style: str | None = None) -> str:
+    """Deterministic, style-specific fallback when Gemini is unavailable."""
+    style = style or DEFAULT_STYLE[tone]
+    first = {
+        "warm": "정산 내역 나왔어! 확인하고 편할 때 보내주면 고마워 😊",
+        "playful": "우리 즐거운 모임 정산도 마무리하자! 확인하고 편할 때 부탁해 😄",
+        "firm": "정산 내역을 확인하고 송금 부탁해. 확인되면 알려줘.",
+        "polite": "정산 내역을 안내드립니다. 편하실 때 확인해 주시면 감사하겠습니다.",
+        "gentle": "지난 모임 정산 내역 안내드려요. 시간 되실 때 편하게 확인 부탁드립니다 😊",
+        "formal": "정산 내역을 전달드립니다. 확인 후 송금해 주시기 바랍니다. 감사합니다.",
+        "friendly": "정산 내역 확인하고 편할 때 보내주면 돼! 고마워 😊",
+        "considerate": "정산 내역 안내하려고 연락했어. 부담 갖지 말고 편할 때 확인 부탁해!",
+        "clear": "정산 내역 확인 부탁해. 송금 후 알려주면 고마워!",
+    }
+    again = {
+        "warm": "정산 내역 다시 알려줘! 이미 보냈다면 말해줘. 고마워 🙏",
+        "playful": "정산 알림 한 번 더 살짝 남겨! 이미 보냈다면 알려줘 😄",
+        "firm": "정산 내역을 다시 확인 부탁해. 이미 송금했다면 알려줘.",
+        "polite": "정산 내역을 다시 안내드립니다. 이미 송금하셨다면 양해 부탁드리며, 확인 후 알려주시면 감사하겠습니다.",
+        "gentle": "정산 내역 확인 차 다시 연락드려요. 이미 보내셨다면 양해 부탁드립니다 😊",
+        "formal": "정산 내역 재안내드립니다. 이미 송금하셨다면 본 안내는 양해 부탁드립니다.",
+        "friendly": "정산 내역 다시 한번 확인 부탁해! 이미 보냈다면 알려줘. 고마워 😊",
+        "considerate": "혹시 정산 확인할 시간이 없었을까 봐 다시 남겨! 이미 보냈다면 알려줘.",
+        "clear": "정산 내역 재확인 부탁해. 이미 송금했다면 알려줘.",
+    }
+    return (again if repeat else first)[style]
 
 
 def compose_message(
@@ -182,6 +190,7 @@ def generate_reminder(
     tone: str,
     repeat: bool,
     client=None,
+    style: str | None = None,
 ) -> dict:
     """Gemini 안내 문구를 생성하고 검증한다."""
 
@@ -203,9 +212,14 @@ def generate_reminder(
             "송금자와 수취인을 확인해 주세요"
         )
 
+    # Preserve clients that only send relationship, without a sub-style.
+    style = style or DEFAULT_STYLE[tone]
+    if style not in STYLE_OPTIONS[tone]:
+        raise ValueError("선택한 관계와 세부 말투가 일치하지 않습니다")
+
     # 2. Gemini 오류 시 사용할 기본 문구
     source = "template"
-    body = _fallback_body(tone, repeat)
+    body = _fallback_body(tone, repeat, style)
 
     # 환경변수로 디버그 출력 제어
     debug = os.getenv("REMINDER_DEBUG", "0") == "1"
@@ -223,6 +237,7 @@ def generate_reminder(
         )
 
         # 4. 실제 Gemini API 호출
+        prompt += f"\n세부 말투: {STYLE_OPTIONS[tone][style]}"
         model_response = (
             client or _client()
         ).models.generate_content(

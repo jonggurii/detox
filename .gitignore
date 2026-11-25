@@ -9,3 +9,6 @@ data/
 *.sqlite3-journal
 *.sqlite3-wal
 *.sqlite3-shm
+_backup_final_eval_*/
+_backup_before_main_fix_*/
+step90/

@@ -1,7 +1,8 @@
 """추출, 로컬 스키마 검증, 입력 검토. 사용자 확인은 별도 단계다."""
 from collections import Counter, defaultdict
 from functools import lru_cache
-from .gemini_client import get_client, get_model
+from .gemini_client import get_client, get_model, generation_limits, log_usage
+from .receipt_reconciliation import reconcile_reviewed_receipts
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
@@ -367,52 +368,79 @@ def parse_and_review(
     )
 
     feedback = ""
+    # 신규 프로젝트에서 Gemini 2.5 접근이 제한될 수 있으므로 3.x 모델만 사용한다.
+    # Render의 GEMINI_FALLBACK_MODEL로 대체 모델을 교체하거나 비활성화할 수 있다.
+    fallback = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.1-flash-lite").strip()
+    models = [selected]
+    if fallback and fallback != selected:
+        models.append(fallback)
+    generation_schema = _generation_schema(schema)
+    log = logging.getLogger("uvicorn.error")
+    calls = 0
+    deadline = time.monotonic() + 110
 
     for attempt in (1, 2):
-        # Temporary Gemini failures should not discard reviewed receipt data.
-        models = [selected]
+        # attempt는 JSON 출력/검증 실패 시 형식 수정을 위한 반복이다.
+        # 504 재시도로 동일 모델을 여러 번 장시간 호출하지 않는다.
         last_exc = None
         response = None
+        used_model = selected
         for model_name in models:
-            for retry_index in range(3):
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config={
-                            "system_instruction": prompt + feedback,
-                            "response_mime_type": "application/json",
-                            "response_json_schema": _generation_schema(schema),
-                            "temperature": 0,
-                        },
-                    )
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    status = getattr(exc, "code", None)
-                    try:
-                        status = int(status)
-                    except (TypeError, ValueError):
-                        status = None
-                    # SDK errors may expose status only in their string.
-                    detail = str(exc)
-                    retryable = status in (429, 500, 502, 503, 504) or (
-                        status is None and any(t in detail for t in (
-                            "429", "500 INTERNAL", "502", "503", "504", "UNAVAILABLE", "RESOURCE_EXHAUSTED"
-                        ))
-                    )
-                    logging.getLogger(__name__).warning(
-                        "Gemini parse failed: model=%s attempt=%s status=%s error=%s",
-                        model_name, retry_index + 1, status, detail[:500]
-                    )
-                    if not retryable:
-                        raise ParserAPIError(f"Gemini 요청 실패 (HTTP {status or 'unknown'}). 서버 로그를 확인해 주세요.") from exc
-                    if retry_index < 2:
-                        time.sleep(min(2 ** (retry_index + 1) + random.random(), 8))
-            if response is not None:
+            if calls >= 2 or time.monotonic() + 45 > deadline:
+                raise ParserAPIError("정산 분석 요청 한도에 도달했습니다. 직접 입력하거나 잠시 후 다시 시도해 주세요.")
+            calls += 1
+            started = time.monotonic()
+            log.info("Gemini start: stage=parse model=%s call=%s", model_name, calls)
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config={
+                        "system_instruction": prompt + feedback,
+                        "response_mime_type": "application/json",
+                        "response_json_schema": generation_schema,
+                        "temperature": 0,
+                        **generation_limits(model_name),
+                    },
+                )
+                used_model = model_name
+                log_usage(response, model_name, "parse", calls, started)
+                log.info(
+                    "Gemini parse succeeded: model=%s format_attempt=%s elapsed=%.2fs",
+                    model_name, attempt, time.monotonic() - started,
+                )
                 break
+            except Exception as exc:
+                last_exc = exc
+                status = getattr(exc, "code", None)
+                try:
+                    status = int(status)
+                except (TypeError, ValueError):
+                    status = None
+                detail = str(exc)
+                retryable = status in (429, 500, 502, 503, 504) or (
+                    status is None and any(token in detail for token in (
+                        "429", "500 INTERNAL", "502", "503", "504",
+                        "UNAVAILABLE", "RESOURCE_EXHAUSTED", "DEADLINE_EXCEEDED",
+                    ))
+                )
+                log.warning(
+                    "Gemini parse failed: model=%s format_attempt=%s status=%s "
+                    "elapsed=%.2fs error=%s",
+                    model_name, attempt, status,
+                    time.monotonic() - started, detail[:500],
+                )
+                if status == 429 or "RESOURCE_EXHAUSTED" in detail:
+                    raise ParserAPIError("Gemini API 사용량 제한에 도달했습니다. 할당량을 확인해 주세요.") from exc
+                if not retryable:
+                    raise ParserAPIError(
+                        f"Gemini 요청 실패 (HTTP {status or 'unknown'}). 서버 로그를 확인해 주세요."
+                    ) from exc
+                # 일시적 장애면 다음 모델을 사용한다. 마지막 모델까지 실패하면 종료한다.
         if response is None:
-            raise ParserAPIError("Gemini 서버가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요.") from last_exc
+            raise ParserAPIError(
+                "Gemini 모델들이 요청 시간 내에 응답하지 못했습니다. 잠시 후 다시 시도해 주세요."
+            ) from last_exc
 
         candidates = getattr(response, "candidates", None) or []
         finish = (
@@ -423,11 +451,7 @@ def parse_and_review(
         finish = getattr(finish, "name", finish)
 
         if finish == "MAX_TOKENS":
-            feedback = (
-                "\n이전 응답이 잘렸습니다. "
-                "설명 없이 완전한 JSON 객체만 반환하세요."
-            )
-            continue
+            raise ManualInputRequired("출력 토큰 한도에 도달했습니다. 정산 내용을 나누거나 직접 입력해 주세요.")
 
         if finish != "STOP":
             raise ParserAPIError(
@@ -451,6 +475,12 @@ def parse_and_review(
                 "같은 원문의 조건만 사용해 형식을 바로잡으세요."
             )
             continue
+
+        # Preserve reviewed receipt items and reconcile only explicitly scoped equal rules.
+        reconciled = reconcile_reviewed_receipts(
+            context.model_dump(exclude_unset=True), supplied_evidence, text
+        )
+        context = validate_context_data(reconciled, schema=schema)
 
         def normalize_explicit_amount_rules(context):
             # Pydantic RequestContext → dict 변환
@@ -516,18 +546,7 @@ def parse_and_review(
         context = normalize_explicit_amount_rules(context)
         issues = review_context(context, schema=schema)
 
-        missing_rules = [issue for issue in issues if issue.code == "rule_count"]
-        if missing_rules and attempt == 1:
-            missing = ", ".join(issue.path for issue in missing_rules)
-            feedback = (
-                "\n이전 JSON에서 항목별 분담 규칙이 누락되거나 다른 항목에 합쳐졌습니다. "
-                f"누락/중복 검증 위치: {missing}. "
-                "expenses의 각 items 항목마다 정확히 하나의 split_rules를 생성하세요. "
-                "서로 다른 item_index에 대한 individual_amounts를 한 규칙에 합치지 마세요. "
-                "이미 정확한 다른 항목의 정보는 보존하고 원문에 없는 규칙은 추측하지 마세요."
-            )
-            continue
-
+        # 누락된 분담 규칙은 검토 화면에 전달한다. 전체 JSON 자동 재생성 금지.
         return ParseResult(
             context=context,
             issues=issues,
@@ -540,7 +559,7 @@ def parse_and_review(
             supplied_evidence=supplied_evidence,
             prompt_version=version,
             schema_sha256=digest,
-            model=selected,
+            model=used_model,
             attempts=attempt,
         )
 
@@ -1081,7 +1100,7 @@ def main():
         print(f"처리 실패: {exc}")
         return 1
     print(result.model_dump_json(indent=2))
-    print(f"총 소요 시간: {time.perf_counter() - started:.2f}초")
+    print(f"총 소요 시간: {time.monotonic() - started:.2f}초")
     print("스키마·자동 검토 결과이며, 원문 대조와 사용자 확인이 필요합니다.")
     return 0
 

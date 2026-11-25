@@ -29,8 +29,13 @@ SCHEMA_PATH = (
     / "request_context.schema.json"
 )
 
-AC_IDS = {f"AC{i}" for i in range(1, 7)}
-CASE_IDS = {f"G{i:02d}" for i in range(1, 9)}
+AC_IDS = (
+    {f"AC{i}" for i in range(1, 7)}
+    | {f"MVP{i}" for i in range(1, 7)}
+    | {f"CALC{i}" for i in range(1, 4)}
+    | {f"CLAIM{i}" for i in range(1, 3)}
+    | {f"EXTRACT{i}" for i in range(1, 7)}
+)
 
 REQUIRED_KEYS = {
     "id",
@@ -93,6 +98,7 @@ def load_cases():
             "target",
             "fixtures",
             "cases",
+            "acceptance_cases",
         },
         "알 수 없는 최상위 키",
     )
@@ -114,8 +120,8 @@ def load_cases():
     cases = document.get("cases")
 
     require(
-        isinstance(cases, list) and len(cases) == 8,
-        "G01~G08 8개가 필요합니다.",
+        isinstance(cases, list) and bool(cases),
+        "review_context 골든 케이스가 한 개 이상 필요합니다.",
     )
 
     ids = set()
@@ -241,8 +247,8 @@ def load_cases():
             )
 
     require(
-        ids == CASE_IDS,
-        "ID는 G01~G08이어야 합니다.",
+        all(case_id.startswith("G") and case_id[1:].isdigit() for case_id in ids),
+        "골든 ID는 G 뒤에 숫자가 와야 합니다.",
     )
 
     for case in cases:

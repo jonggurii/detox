@@ -82,6 +82,9 @@ python -m uvicorn app:app --reload
 
 ### 시나리오 1 — 자연어로 복합 정산
 
+**관련 AC:** MVP1, MVP5, MVP6, AC1, AC6, CALC1, CLAIM1. 자세한 판정 기준: [`docs/SPEC.md` §6~8](docs/SPEC.md).
+
+
 1. 모아정산을 실행하고 정산 입력 화면으로 이동합니다.
 2. 다음 예시 문장을 입력합니다.
 
@@ -106,6 +109,9 @@ python -m uvicorn app:app --reload
 
 ### 시나리오 2 — 영수증 사진과 설명으로 입력
 
+**관련 AC:** MVP2, MVP5, EXTRACT1, EXTRACT3, EXTRACT6. 자세한 판정 기준: [`docs/SPEC.md` §6~8](docs/SPEC.md).
+
+
 1. 앱에서 영수증 이미지 분석 기능을 선택합니다.
 2. 실제 개인정보가 없는 테스트 영수증 사진(JPG/PNG 등)을 선택합니다.
 3. 다음과 같이 추가 조건을 입력합니다.
@@ -119,6 +125,9 @@ python -m uvicorn app:app --reload
 영수증 사진만으로는 누가 어떤 음식을 소비했는지 확정할 수 없으므로, **추가 조건 입력 및 사용자 검토가 필요**합니다.
 
 ### 시나리오 3 — 직접 N분의 1 정산
+
+**관련 AC:** MVP3, MVP5, MVP6, CALC1, CLAIM1. 자세한 판정 기준: [`docs/SPEC.md` §6~8](docs/SPEC.md).
+
 
 AI 분석 없이 사용자가 총지출액, 참여자, 결제자를 직접 입력하여 정산하는 방식입니다.
 
@@ -168,6 +177,9 @@ AI 분석 없이 사용자가 총지출액, 참여자, 결제자를 직접 입�
 - 참여자 수 또는 총지출액을 변경했을 때 정산 금액이 다시 계산되는지 확인합니다.
 
 ### 시나리오 4 — 직접 차액 정산
+
+**관련 AC:** MVP4. 자세한 판정 기준: [`docs/SPEC.md` §6~8](docs/SPEC.md).
+
 
 차액 정산은 사용자가 **보내는 사람, 받는 사람, 송금액을 직접 지정**하는 방식입니다.
 
@@ -285,3 +297,15 @@ N분의 1 정산과 달리 총지출액을 균등 분할하는 것이 아니라 
 
 ---
 피드백 메일주소 : gun1851@ajou.ac.kr
+
+
+## 최종평가(2026-12-09) 준비·검증
+
+- 기준 문서: [SPEC](docs/SPEC.md) · [아키텍처/위협 목록](docs/ARCHITECTURE.md) · [Evals 설계](evals/EVAL_DESIGN.md).
+- 실행 환경: Python 3.12, Node.js·npm, `pip install -r requirements.txt`, `cd mobile; npm ci`. `.env.example`의 이름을 참고하되 `.env`와 API 키는 Git에 올리지 않는다.
+- 골든·전체 테스트: 프로젝트 루트에서 `$env:PYTHONPATH="src"`; `python -m pytest tests -q`.
+- Evals 러너 검증(모델 성능 아님): `python evals/run_evals.py --mode stored --change "러너 검증" --golden "실제 pytest 결과"`.
+- Gemini live 평가: 사용 가능한 `GEMINI_MODEL`·`GEMINI_API_KEY` 설정 후 `python evals/run_evals.py --mode live --change "기준점 1/3" --golden "실제 pytest 결과"`; 같은 커밋/평가셋으로 2/3·3/3도 실행해 변동 폭 기록. API 쿼터·비용 주의.
+- 운영 trace: `logs/trace.jsonl`에 API 요청당 비식별 메타데이터 한 줄. 실명·금액·영수증·키·세션 ID는 기록하지 않는다. Render 무료 파일시스템은 휘발될 수 있어 안전하게 수집·저장해야 한다. 개인정보 없는 실제 팀원 시연 로그를 커밋하고 실패 케이스 출처 ID를 `evalset.jsonl`에 기록한다.
+- **중요 보안 미해결:** 사용자별 인증·서버 소유권 검사가 완료되기 전에는 실제 개인정보나 결제자료로 공개 테스트하지 않는다. 정산 목록의 타 사용자 노출 피드백은 UI에서만 숨겨서는 해결되지 않는다.
+- 개선 대상: 정산 추가 버튼 무응답, 웹 이미지 업로드, 504·무한 로딩, 세션 접근 통제. 실사용 재현 및 회귀 확인 이전에는 해결 완료로 표시하지 않는다.

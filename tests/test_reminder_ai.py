@@ -59,6 +59,7 @@ def body(sid, cid):
 
 
 def test_model_sees_no_person_or_money_and_server_locks_header(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3-flash-preview")
     model = ModelStub(json.dumps({'message': '정산 내용 확인 부탁해! 편할 때 보내주면 고맙겠어.'}, ensure_ascii=False))
     monkeypatch.setattr('settlements.reminder_writer._client', lambda: model)
     with TestClient(create_app(tmp_path/'reminders.sqlite3')) as client:
@@ -71,7 +72,7 @@ def test_model_sees_no_person_or_money_and_server_locks_header(monkeypatch, tmp_
         assert '지훈 → 민수: 30,000원' in data['message']
         prompt = model.calls[0]['contents']
         assert all(word not in prompt for word in ('지훈', '민수', '30,000', '11조 회식'))
-        assert model.calls[0]['model'] == 'gemini-3.5-flash'
+        assert model.calls[0]['model'] == 'gemini-3-flash-preview'
 
 
 def test_spurious_amount_and_name_are_rejected():
