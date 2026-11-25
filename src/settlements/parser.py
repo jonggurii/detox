@@ -1,6 +1,7 @@
 """추출, 로컬 스키마 검증, 입력 검토. 사용자 확인은 별도 단계다."""
 from collections import Counter, defaultdict
 from functools import lru_cache
+from .trace_logging import set_trace_model
 from .gemini_client import get_client, get_model, generation_limits, log_usage
 from .receipt_reconciliation import reconcile_reviewed_receipts
 from hashlib import sha256
@@ -392,6 +393,7 @@ def parse_and_review(
             started = time.monotonic()
             log.info("Gemini start: stage=parse model=%s call=%s", model_name, calls)
             try:
+                set_trace_model(model_name, f"parse_query v{version}")
                 response = client.models.generate_content(
                     model=model_name,
                     contents=contents,

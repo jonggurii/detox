@@ -31,7 +31,7 @@ if str(SRC) not in sys.path:
 
 from settlements import parser  # noqa: E402
 from settlements.receipt_reader import GeminiReceiptReader, parse_receipt_output  # noqa: E402
-from settlements.gemini_client import get_model  # noqa: E402
+from settlements.gemini_client import get_model, get_multimodal_model  # noqa: E402
 
 VALID_CATEGORIES = {'normal','boundary','clarify','conflict','injection','hallucination','out_of_scope','attack_direct','attack_indirect','attack_bypass'}
 EXPECT_TEXT_KEYS = {
@@ -306,6 +306,8 @@ def run(cases:list[dict[str,Any]],mode:str,fixtures:dict[str,dict[str,Any]]) -> 
     records=[]
     for case in cases:
         ident=case['id']
+        if mode=='live':
+            print(f'[LIVE] {len(records)+1}/{len(cases)} {ident} START', flush=True)
         record={'id':ident,'category':case['category'],'kind':case['kind'],'ac_ids':case['ac_ids'],
                 'graders':case['graders'],'query':case['query'],'expected':case['expect'],
                 'expected_status':case['expect'].get('status'),'schema_valid':False,
@@ -340,6 +342,10 @@ def run(cases:list[dict[str,Any]],mode:str,fixtures:dict[str,dict[str,Any]]) -> 
             record['error']={'type':type(exc).__name__,'message':str(exc)[:300]}
             # Errors stay in denominator; never silently drop or count as success.
         records.append(record)
+        if mode=='live':
+            state='PASS' if record['pass'] else 'FAIL'
+            error_type=(record['error'] or {}).get('type', '-')
+            print(f'[LIVE] {len(records)}/{len(cases)} {ident} {state} error={error_type}', flush=True)
     return records,metric_summary(records)
 
 
@@ -352,6 +358,9 @@ def build_report(cases:list[dict[str,Any]], records:list[dict[str,Any]],metrics:
         'ai_quality_measured':args.mode=='live',
         'commit':git_commit(),'change':args.change,'golden_tests':args.golden,
         'model':get_model() if args.mode=='live' else 'not-called',
+        'models':({'text':get_model(), 'receipt':get_multimodal_model(),
+                   'fallback':os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-3.1-flash-lite').strip()}
+                  if args.mode=='live' else {}),
         'prompt_version':prompt_version,'schema_sha256':schema_digest,
         'evalset_version':f'{len(cases)} cases / sha256:{sha256_file(dataset_path)}',
         'stored_fixture_version':sha256_file(fixtures_path) if args.mode=='stored' else None,
